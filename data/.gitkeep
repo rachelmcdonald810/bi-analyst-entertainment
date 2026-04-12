@@ -1,0 +1,5 @@
+Store raw API outputs
+Store cleaned datasets (if needed before Snowflake)
+
+### data/
+Stores raw and intermediate datasets used throughout the pipeline. Raw data reflects unmodified API responses, while processed data will contain cleaned and structured datasets ready for analysis.
