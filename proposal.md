@@ -1,13 +1,8 @@
 # Project Proposal
 
-## Name
-Rachel McDonald  
-
-## Project Name
-Live Music Analytics Pipeline  
-
-## GitHub Repository
-[bi-analyst-entertainment](https://github.com/rachelmcdonald810/bi-analyst-entertainment)
+Name: Rachel McDonald  
+Project Name: Live Music Analytics Pipeline  
+GitHub Repository: [bi-analyst-entertainment](https://github.com/rachelmcdonald810/bi-analyst-entertainment)
 
 ---
 
