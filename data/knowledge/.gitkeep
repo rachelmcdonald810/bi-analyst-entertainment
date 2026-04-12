@@ -1,0 +1,8 @@
+AI insight layer
+
+Store scraped articles about live music / ticketing
+Store Claude-generated insights (later)
+Build your knowledge base
+
+### knowledge/
+Contains unstructured data and synthesized insights for the knowledge base component of the project. Raw sources (e.g., articles, reports) will be stored here, along with Claude-generated summaries and thematic analyses.
