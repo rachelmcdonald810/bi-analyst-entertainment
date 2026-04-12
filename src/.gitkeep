@@ -1,3 +1,6 @@
 pull ticket sales data
 pull artist/streaming data
 send it to Snowflake
+
+### Description
+Contains Python scripts for data extraction and preprocessing. This includes API integrations (e.g., Ticketmaster, Spotify) and any logic used to prepare raw data for storage and analysis.
