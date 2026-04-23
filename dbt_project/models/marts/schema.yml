@@ -1,0 +1,44 @@
+version: 2
+
+models:
+  - name: fact_events
+    description: Fact table containing live music events with keys to dimension tables
+    columns:
+      - name: event_key
+        description: Surrogate key for the event
+        tests:
+          - unique
+          - not_null
+      - name: artist_key
+        description: Foreign key to dim_artists
+      - name: venue_key
+        description: Foreign key to dim_venues
+      - name: date_key
+        description: Foreign key to dim_dates
+
+  - name: dim_artists
+    description: Artist dimension combining Ticketmaster and Spotify data
+    columns:
+      - name: artist_key
+        description: Surrogate key for the artist
+        tests:
+          - unique
+          - not_null
+
+  - name: dim_venues
+    description: Venue dimension with location details
+    columns:
+      - name: venue_key
+        description: Surrogate key for the venue
+        tests:
+          - unique
+          - not_null
+
+  - name: dim_dates
+    description: Date dimension with day-of-week, month, quarter attributes
+    columns:
+      - name: date_key
+        description: Surrogate key for the date
+        tests:
+          - unique
+          - not_null

@@ -1,0 +1,11 @@
+version: 2
+
+sources:
+  - name: raw
+    database: LIVE_MUSIC_DB
+    schema: RAW
+    tables:
+      - name: raw_ticketmaster_events
+        description: Raw event data from Ticketmaster Discovery API
+      - name: raw_spotify_artists
+        description: Raw artist data scraped from Spotify via Firecrawl
