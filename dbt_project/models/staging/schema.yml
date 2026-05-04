@@ -1,0 +1,32 @@
+version: 2
+
+models:
+  - name: stg_ticketmaster_events
+    description: Staged Ticketmaster event data from raw source
+    columns:
+      - name: event_id
+        description: Ticketmaster event identifier
+        tests:
+          - not_null
+      - name: event_name
+        description: Name of the event
+        tests:
+          - not_null
+      - name: event_date
+        description: Date of the event
+        tests:
+          - not_null
+      - name: venue_name
+        description: Name of the venue
+        tests:
+          - not_null
+
+  - name: stg_spotify_artists
+    description: Staged Spotify artist data from Firecrawl scrape
+    columns:
+      - name: artist_name
+        description: Artist name
+        tests:
+          - not_null
+      - name: monthly_listeners
+        description: Spotify monthly listener count
