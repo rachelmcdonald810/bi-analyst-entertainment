@@ -37,17 +37,21 @@ def run_query(query):
 
 # ── Load data from mart tables ───────────────────────────────────────────────
 
-fact_events = run_query("""
-    SELECT f.EVENT_ID, f.EVENT_NAME, f.EVENT_DATE, f.EVENT_TIME,
-           f.SALE_STATUS, f.PRICE_MIN, f.PRICE_MAX, f.PRICE_AVG, f.CURRENCY,
-           a.ARTIST_NAME, a.GENRE, a.MONTHLY_LISTENERS, a.SPOTIFY_URL,
-           v.VENUE_NAME, v.CITY, v.STATE,
-           d.DAY_NAME, d.MONTH_NAME, d.YEAR, d.QUARTER, d.IS_WEEKEND
-    FROM RAW_MARTS.FACT_EVENTS f
-    LEFT JOIN RAW_MARTS.DIM_ARTISTS a ON f.ARTIST_KEY = a.ARTIST_KEY
-    LEFT JOIN RAW_MARTS.DIM_VENUES v ON f.VENUE_KEY = v.VENUE_KEY
-    LEFT JOIN RAW_MARTS.DIM_DATES d ON f.DATE_KEY = d.DATE_KEY
-""")
+try:
+    fact_events = run_query("""
+        SELECT f.EVENT_ID, f.EVENT_NAME, f.EVENT_DATE, f.EVENT_TIME,
+               f.SALE_STATUS, f.PRICE_MIN, f.PRICE_MAX, f.PRICE_AVG, f.CURRENCY,
+               a.ARTIST_NAME, a.GENRE, a.MONTHLY_LISTENERS, a.SPOTIFY_URL,
+               v.VENUE_NAME, v.CITY, v.STATE,
+               d.DAY_NAME, d.MONTH_NAME, d.YEAR, d.QUARTER, d.IS_WEEKEND
+        FROM RAW_MARTS.FACT_EVENTS f
+        LEFT JOIN RAW_MARTS.DIM_ARTISTS a ON f.ARTIST_KEY = a.ARTIST_KEY
+        LEFT JOIN RAW_MARTS.DIM_VENUES v ON f.VENUE_KEY = v.VENUE_KEY
+        LEFT JOIN RAW_MARTS.DIM_DATES d ON f.DATE_KEY = d.DATE_KEY
+    """)
+except Exception as e:
+    st.error(f"Failed to connect to Snowflake: {e}")
+    st.stop()
 
 # ── Sidebar filters ──────────────────────────────────────────────────────────
 
@@ -59,8 +63,12 @@ selected_genres = st.sidebar.multiselect("Genre", genres, default=genres)
 states = sorted(fact_events["STATE"].dropna().unique())
 selected_states = st.sidebar.multiselect("State", states, default=states)
 
-price_min_val = float(fact_events["PRICE_AVG"].min() or 0)
-price_max_val = float(fact_events["PRICE_AVG"].max() or 500)
+price_col = fact_events["PRICE_AVG"].dropna()
+price_min_val = float(price_col.min()) if not price_col.empty else 0.0
+price_max_val = float(price_col.max()) if not price_col.empty else 500.0
+if price_min_val == price_max_val:
+    price_max_val = price_min_val + 1.0
+
 price_range = st.sidebar.slider(
     "Avg Price Range ($)",
     min_value=price_min_val,
@@ -97,7 +105,7 @@ genre_counts = df.groupby("GENRE").size().reset_index(name="count").sort_values(
 st.subheader("Events by Genre")
 st.bar_chart(genre_counts.set_index("GENRE")["count"])
 
-# ── Section 2: Pricing Analytics ─────────────────────────────────────────────
+# ── Section 2: Pricing Analytics ──────────────────────────────────────────────
 
 st.header("Pricing Analytics")
 
@@ -142,7 +150,7 @@ if not artist_stats.empty:
 else:
     st.info("No artists with both event and Spotify data available.")
 
-# ── Section 4: Venue & Geography ─────────────────────────────────────────────
+# ── Section 4: Venue & Geography ──────────────────────────────────────────────
 
 st.header("Venue & Geography")
 
@@ -182,5 +190,7 @@ with col1:
 with col2:
     st.subheader("Weekend vs Weekday")
     weekend_counts = df.groupby("IS_WEEKEND").size().reset_index(name="count")
-    weekend_counts["IS_WEEKEND"] = weekend_counts["IS_WEEKEND"].map({True: "Weekend", False: "Weekday"})
-    st.bar_chart(weekend_counts.set_index("IS_WEEKEND")["count"])
+    weekend_counts["label"] = weekend_counts["IS_WEEKEND"].apply(
+        lambda x: "Weekend" if x in (True, "True", "true", 1) else "Weekday"
+    )
+    st.bar_chart(weekend_counts.set_index("label")["count"])
