@@ -40,6 +40,22 @@ CURATED_ARTISTS = [
     ("Sabrina Carpenter", "https://open.spotify.com/artist/74KM79TiuVKeVCqs8QtB0B"),
     ("Chappell Roan", "https://open.spotify.com/artist/7GlBOeep6PqTfFi59PTUUN"),
     ("Tyler Childers", "https://open.spotify.com/artist/5K8mNMsW3wUZxJwCnuqqde"),
+    # Artists with high event counts in Ticketmaster data
+    ("Metallica", "https://open.spotify.com/artist/2ye2Wgw4gimLv2eAKyk1NB"),
+    ("Dave Matthews Band", "https://open.spotify.com/artist/2TI7qyDE0QfyOlnbtfDo7L"),
+    ("Chris Stapleton", "https://open.spotify.com/artist/4YLtL2PYDjzMIJSAiEHNKi"),
+    ("Bruno Mars", "https://open.spotify.com/artist/0du5cEVh5yTK9QJze8zA0C"),
+    ("Phish", "https://open.spotify.com/artist/4YPqbAiLCBM9cEsBMgMFya"),
+    ("Doja Cat", "https://open.spotify.com/artist/5cj0lLjcoR7YOSnhnX0Po5"),
+    ("Ed Sheeran", "https://open.spotify.com/artist/6eUKZXaKkcviH0Ku9w2n3V"),
+    ("Foo Fighters", "https://open.spotify.com/artist/7jy3rLJdDQY21OgRLCZ9sD"),
+    ("Luke Combs", "https://open.spotify.com/artist/718COspgdWOnwOFpJHRZHS"),
+    ("Riley Green", "https://open.spotify.com/artist/1nBAxEKiJKb8Hu5MfBLjSH"),
+    ("Luke Bryan", "https://open.spotify.com/artist/0BvkDsjIUla7X0k6CSWh1I"),
+    ("Soulja Boy", "https://open.spotify.com/artist/7c4V3MRqsFKCmNqFHXVByj"),
+    ("Boys Like Girls", "https://open.spotify.com/artist/68aMD6TLRYlRbi0HgkSUoX"),
+    ("Sepultura", "https://open.spotify.com/artist/09kPFq6SHHPvaQnCjSCKtH"),
+    ("Danny Brown", "https://open.spotify.com/artist/2fGfRomjBWPMV0lMeDp4mV"),
 ]
 
 # Spotify Search API (public, no auth needed)
