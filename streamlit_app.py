@@ -252,6 +252,15 @@ with tab1:
 
     # Demand leaderboard
     st.subheader("Artist Demand Signals — Three Sources")
+    with st.expander("What do these metrics mean?"):
+        st.markdown("""
+- **Spotify Listeners** — Monthly listener count from Spotify. Measures passive demand — how many people are streaming an artist's music.
+- **SeatGeek Score (0–1)** — A composite rating based on ticket sales velocity, listing volume, and price trends. Closer to 1.0 = near-peak demand. This measures how aggressively tickets are selling.
+- **SeatGeek Popularity** — A raw ranking based on search volume and ticket-buying activity on SeatGeek. Higher number = more people actively looking for tickets. This is a volume signal — how much attention an artist gets on the ticketing side.
+- **TM Events** — Number of events currently listed on Ticketmaster. Represents live event supply.
+
+**How to read the table:** When Spotify listeners AND SeatGeek score are both high but TM Events is low, that's the strongest signal of untapped booking demand.
+""")
     event_counts = events.groupby("ARTIST_NAME").agg(tm_events=("EVENT_ID", "count")).reset_index()
     demand = spotify.merge(seatgeek, on="ARTIST_NAME", how="outer").merge(event_counts, on="ARTIST_NAME", how="outer")
     demand["tm_events"] = demand["tm_events"].fillna(0).astype(int)
@@ -490,25 +499,37 @@ with tab4:
     )
 
     if not map_data.empty:
-        import pydeck as pdk
-        max_events = map_data["events"].max()
-        map_data["color"] = map_data["events"].apply(lambda x: [
-            int(min(255, x / max_events * 220 + 35)),
-            int(max(0, (1 - x / max_events) * 120)),
-            int(max(0, (1 - x / max_events) * 80)),
-            200
-        ])
-        map_data["size"] = map_data["events"] * 300 + 500
-
-        layer = pdk.Layer("ScatterplotLayer", data=map_data,
-                          get_position=["lon", "lat"], get_radius="size",
-                          get_fill_color="color", pickable=True,
-                          radius_min_pixels=5, radius_max_pixels=50)
-        view = pdk.ViewState(latitude=39.5, longitude=-98.35, zoom=3.3, pitch=0)
-        st.pydeck_chart(pdk.Deck(layers=[layer], initial_view_state=view,
-                                  map_style="mapbox://styles/mapbox/dark-v10",
-                                  tooltip={"text": "{CITY}, {STATE}\n{events} events"}))
-        st.caption("Dot size and color intensity = event concentration")
+        fig = px.scatter_geo(
+            map_data,
+            lat="lat", lon="lon",
+            size="events", color="events",
+            hover_name="CITY",
+            hover_data={"STATE": True, "events": True, "lat": False, "lon": False},
+            color_continuous_scale=["#3a2a18", "#c4884d", "#ff4444"],
+            size_max=40,
+            scope="usa",
+        )
+        fig.update_layout(
+            geo=dict(
+                bgcolor="rgba(0,0,0,0)",
+                landcolor="#2a2a45",
+                countrycolor="#888888",
+                subunitcolor="#555577",
+                showsubunits=True,
+                showcountries=True,
+                showlakes=False,
+                lakecolor="rgba(0,0,0,0)",
+                showcoastlines=True,
+                coastlinecolor="#888888",
+            ),
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+            coloraxis_colorbar=dict(title="Events"),
+            margin=dict(l=0, r=0, t=0, b=0),
+            height=500,
+        )
+        st.plotly_chart(fig, use_container_width=True)
+        st.caption("Dot size and color intensity = event concentration. Red = high, tan = low.")
 
     st.divider()
 
