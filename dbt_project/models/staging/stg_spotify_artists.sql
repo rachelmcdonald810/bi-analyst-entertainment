@@ -1,5 +1,11 @@
 with source as (
-    select * from {{ source('raw', 'raw_spotify_artists') }}
+    select *,
+        row_number() over (partition by artist_name order by loaded_at desc) as _rn
+    from {{ source('raw', 'raw_spotify_artists') }}
+),
+
+deduped as (
+    select * from source where _rn = 1
 )
 
 select
@@ -19,4 +25,4 @@ select
 
     -- metadata
     cast(loaded_at as timestamp_tz) as loaded_at
-from source
+from deduped

@@ -2,11 +2,15 @@
 Source 2: Spotify artist pages via Firecrawl -> Snowflake RAW
 Scrapes Spotify artist pages using the Firecrawl API and loads artist
 popularity and metadata into Snowflake.
+
+Dynamically discovers top artists from Ticketmaster data in Snowflake,
+plus a curated list of high-profile touring artists.
 """
 
 import os
 import json
 import re
+import requests
 import snowflake.connector
 from dotenv import load_dotenv
 from firecrawl import V1FirecrawlApp as FirecrawlApp
@@ -19,8 +23,8 @@ load_dotenv()
 FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY")
 app = FirecrawlApp(api_key=FIRECRAWL_API_KEY)
 
-# Top artists to scrape — chosen for live touring relevance
-ARTIST_URLS = [
+# Curated list of high-profile touring artists (guaranteed Spotify presence)
+CURATED_ARTISTS = [
     ("Taylor Swift", "https://open.spotify.com/artist/06HL4z0CvFAxyc27GXpf02"),
     ("Morgan Wallen", "https://open.spotify.com/artist/4oUHIQIBe0LHzYfvXNW4QM"),
     ("Drake", "https://open.spotify.com/artist/3TVXtAsR1Inumwj472S9r4"),
@@ -38,10 +42,48 @@ ARTIST_URLS = [
     ("Tyler Childers", "https://open.spotify.com/artist/5K8mNMsW3wUZxJwCnuqqde"),
 ]
 
+# Spotify Search API (public, no auth needed)
+SPOTIFY_SEARCH_URL = "https://open.spotify.com/search"
+
+
+def get_top_ticketmaster_artists(conn, limit=50):
+    """Get the most frequent artists from Ticketmaster events in Snowflake."""
+    cur = conn.cursor()
+    cur.execute(f"""
+        SELECT ARTIST_NAME, COUNT(*) as event_count
+        FROM RAW_TICKETMASTER_EVENTS
+        WHERE ARTIST_NAME IS NOT NULL
+          AND ARTIST_NAME != ''
+        GROUP BY ARTIST_NAME
+        ORDER BY event_count DESC
+        LIMIT {limit}
+    """)
+    artists = [(row[0], row[1]) for row in cur.fetchall()]
+    cur.close()
+    print(f"Found {len(artists)} unique artists in Ticketmaster data")
+    return artists
+
+
+def search_spotify_artist(artist_name):
+    """Search for an artist's Spotify URL using Spotify's public web search."""
+    # Use a simple approach: construct the likely Spotify search URL
+    # and use Firecrawl to find the artist page
+    try:
+        search_url = f"https://open.spotify.com/search/{requests.utils.quote(artist_name)}"
+        result = app.scrape_url(search_url, formats=["markdown"])
+        if result and result.markdown:
+            # Look for artist profile links in the scraped content
+            match = re.search(r"https://open\.spotify\.com/artist/([a-zA-Z0-9]+)", result.markdown)
+            if match:
+                return f"https://open.spotify.com/artist/{match.group(1)}"
+    except Exception as e:
+        print(f"  Could not search Spotify for {artist_name}: {e}")
+    return None
+
 
 def scrape_artist(artist_name, url):
     """Scrape a Spotify artist page using Firecrawl."""
-    print(f"Scraping {artist_name}...")
+    print(f"  Scraping {artist_name}...")
     try:
         result = app.scrape_url(url, formats=["markdown"])
         return result
@@ -72,18 +114,17 @@ def parse_scraped_data(artist_name, url, result):
 
     monthly_listeners = parse_monthly_listeners(markdown)
 
-    # Extract artist description/bio from the page title or metadata
     page_title = result.title or metadata.get("title", "")
     page_description = metadata.get("description", "")
 
     return (
-        url.split("/")[-1],  # Spotify artist ID from URL
+        url.split("/")[-1],
         artist_name,
         url,
         monthly_listeners,
         page_title,
         page_description,
-        markdown[:5000] if markdown else None,  # Store first 5000 chars of raw markdown
+        markdown[:5000] if markdown else None,
         json.dumps(metadata) if metadata else None,
         datetime.now(timezone.utc).isoformat(),
     )
@@ -92,7 +133,6 @@ def parse_scraped_data(artist_name, url, result):
 # ── Snowflake ─────────────────────────────────────────────────────────────────
 
 def get_snowflake_connection():
-    """Create a Snowflake connection using env vars."""
     return snowflake.connector.connect(
         account=os.getenv("SNOWFLAKE_ACCOUNT"),
         user=os.getenv("SNOWFLAKE_USER"),
@@ -104,7 +144,6 @@ def get_snowflake_connection():
 
 
 def setup_snowflake(conn):
-    """Create database, schema, and table if they don't exist."""
     cur = conn.cursor()
     cur.execute("CREATE DATABASE IF NOT EXISTS LIVE_MUSIC_DB")
     cur.execute("USE DATABASE LIVE_MUSIC_DB")
@@ -127,7 +166,6 @@ def setup_snowflake(conn):
 
 
 def load_to_snowflake(conn, rows):
-    """Insert parsed artist rows into Snowflake."""
     cur = conn.cursor()
     cur.executemany("""
         INSERT INTO RAW_SPOTIFY_ARTISTS
@@ -144,22 +182,42 @@ def load_to_snowflake(conn, rows):
 
 def main():
     print("Starting Spotify artist scraping via Firecrawl...")
-    rows = []
 
-    for artist_name, url in ARTIST_URLS:
-        result = scrape_artist(artist_name, url)
-        row = parse_scraped_data(artist_name, url, result)
-        if row:
-            rows.append(row)
-
-    if not rows:
-        print("No data scraped. Check your Firecrawl API key and network connection.")
-        return
-
-    print(f"\nParsed {len(rows)} artists. Loading to Snowflake...")
     conn = get_snowflake_connection()
     try:
         setup_snowflake(conn)
+
+        # Build artist URL list: curated + top Ticketmaster artists
+        artist_urls = dict(CURATED_ARTISTS)  # name -> url
+        curated_names = {name.lower() for name, _ in CURATED_ARTISTS}
+
+        # Get top artists from Ticketmaster data
+        tm_artists = get_top_ticketmaster_artists(conn, limit=50)
+
+        # For TM artists not in curated list, try to find their Spotify URL
+        print(f"\nSearching Spotify for top Ticketmaster artists...")
+        for artist_name, event_count in tm_artists:
+            if artist_name.lower() not in curated_names and artist_name not in artist_urls:
+                url = search_spotify_artist(artist_name)
+                if url:
+                    artist_urls[artist_name] = url
+                    print(f"    Found: {artist_name} ({event_count} events)")
+
+        print(f"\nTotal artists to scrape: {len(artist_urls)}")
+
+        # Scrape all artists
+        rows = []
+        for artist_name, url in artist_urls.items():
+            result = scrape_artist(artist_name, url)
+            row = parse_scraped_data(artist_name, url, result)
+            if row:
+                rows.append(row)
+
+        if not rows:
+            print("No data scraped.")
+            return
+
+        print(f"\nParsed {len(rows)} artists. Loading to Snowflake...")
         load_to_snowflake(conn, rows)
         print("Spotify Firecrawl extraction complete.")
     finally:

@@ -1,5 +1,11 @@
 with source as (
-    select * from {{ source('raw', 'raw_ticketmaster_events') }}
+    select *,
+        row_number() over (partition by event_id order by loaded_at desc) as _rn
+    from {{ source('raw', 'raw_ticketmaster_events') }}
+),
+
+deduped as (
+    select * from source where _rn = 1
 )
 
 select
@@ -31,4 +37,4 @@ select
 
     -- metadata
     cast(loaded_at as timestamp_tz) as loaded_at
-from source
+from deduped
