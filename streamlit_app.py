@@ -16,16 +16,15 @@ st.set_page_config(page_title="Live Music Analytics", layout="wide", page_icon="
 
 st.markdown("""
 <style>
-    /* Colored metric cards */
+    /* Metric cards */
     div[data-testid="stMetric"] {
-        background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
-        border: 1px solid #00b4d8;
+        background: linear-gradient(135deg, #0E1117 0%, #1B3A5C 100%);
+        border: 1px solid #D4A843;
         border-radius: 10px;
         padding: 15px 20px;
-        box-shadow: 0 4px 15px rgba(0, 180, 216, 0.1);
     }
     div[data-testid="stMetric"] label {
-        color: #00b4d8 !important;
+        color: #D4A843 !important;
         font-size: 0.85rem !important;
     }
     div[data-testid="stMetric"] div[data-testid="stMetricValue"] {
@@ -49,14 +48,17 @@ st.markdown("""
 # ── Color Palette ────────────────────────────────────────────────────────────
 
 COLORS = {
-    "primary": "#00B4D8",
-    "secondary": "#FF9F1C",
-    "accent": "#E71D73",
-    "success": "#2EC4B6",
-    "purple": "#9B5DE5",
-    "gradient": ["#00B4D8", "#0096C7", "#0077B6", "#023E8A", "#03045E"],
-    "categorical": ["#00B4D8", "#FF9F1C", "#E71D73", "#2EC4B6", "#9B5DE5",
-                     "#F15BB5", "#00F5D4", "#FEE440", "#00BBF9", "#F72585"],
+    "coral": "#E8735A",
+    "gold": "#D4A843",
+    "blue": "#1B3A5C",
+    "coral_light": "#F09A88",
+    "gold_light": "#E8C97A",
+    "blue_light": "#2E5C8A",
+    "ombre": ["#1B3A5C", "#2E5C8A", "#D4A843", "#E8735A"],
+    "ombre_warm": ["#D4A843", "#E8735A"],
+    "ombre_cool": ["#1B3A5C", "#2E5C8A"],
+    "categorical": ["#E8735A", "#D4A843", "#2E5C8A", "#F09A88", "#E8C97A",
+                     "#1B3A5C", "#C45B3E", "#B8922F", "#4A7FB5", "#D4765A"],
 }
 
 PLOTLY_LAYOUT = dict(
@@ -214,7 +216,7 @@ with tab1:
         st.subheader("Top 10 Genres")
         top_genres = events.groupby("GENRE").size().reset_index(name="Events").sort_values("Events", ascending=True).tail(10)
         fig = px.bar(top_genres, x="Events", y="GENRE", orientation="h", color="Events",
-                     color_continuous_scale=["#023E8A", "#00B4D8"])
+                     color_continuous_scale=COLORS["ombre_cool"])
         fig.update_layout(**PLOTLY_LAYOUT, showlegend=False, coloraxis_showscale=False, height=350)
         fig.update_traces(texttemplate="%{x}", textposition="outside")
         st.plotly_chart(fig, use_container_width=True)
@@ -223,7 +225,7 @@ with tab1:
         st.subheader("Top 10 Artists")
         top_artists = events.groupby("ARTIST_NAME").size().reset_index(name="Events").sort_values("Events", ascending=True).tail(10)
         fig = px.bar(top_artists, x="Events", y="ARTIST_NAME", orientation="h", color="Events",
-                     color_continuous_scale=["#6B2C91", "#E71D73"])
+                     color_continuous_scale=COLORS["ombre_warm"])
         fig.update_layout(**PLOTLY_LAYOUT, showlegend=False, coloraxis_showscale=False, height=350)
         fig.update_traces(texttemplate="%{x}", textposition="outside")
         st.plotly_chart(fig, use_container_width=True)
@@ -232,7 +234,7 @@ with tab1:
         st.subheader("Top 10 Venues")
         top_venues = events.groupby("VENUE_NAME").size().reset_index(name="Events").sort_values("Events", ascending=True).tail(10)
         fig = px.bar(top_venues, x="Events", y="VENUE_NAME", orientation="h", color="Events",
-                     color_continuous_scale=["#1B4332", "#2EC4B6"])
+                     color_continuous_scale=["#1B3A5C", "#D4A843"])
         fig.update_layout(**PLOTLY_LAYOUT, showlegend=False, coloraxis_showscale=False, height=350)
         fig.update_traces(texttemplate="%{x}", textposition="outside")
         st.plotly_chart(fig, use_container_width=True)
@@ -263,7 +265,7 @@ with tab2:
     st.subheader("Tour Revenue — Verified from Pollstar & Billboard")
     tour_sorted = tour_rev.sort_values("GROSS_REVENUE", ascending=True)
     fig = px.bar(tour_sorted, x="GROSS_REVENUE", y="ARTIST_NAME", orientation="h",
-                 color="AVG_TICKET_PRICE", color_continuous_scale=["#2EC4B6", "#FF9F1C", "#E71D73"],
+                 color="AVG_TICKET_PRICE", color_continuous_scale=COLORS["ombre"],
                  hover_data=["TOUR_NAME", "TICKETS_SOLD", "SHOWS", "TOUR_YEAR"],
                  labels={"GROSS_REVENUE": "Tour Gross ($)", "AVG_TICKET_PRICE": "Avg Ticket ($)"})
     fig.update_layout(**PLOTLY_LAYOUT, height=600, coloraxis_colorbar=dict(title="Avg Ticket $"))
@@ -283,11 +285,11 @@ with tab2:
         fig = go.Figure()
         fig.add_trace(go.Bar(name="Tour Gross", y=rev_compare["ARTIST_NAME"],
                              x=rev_compare["GROSS_REVENUE"], orientation="h",
-                             marker_color="#E71D73", text=rev_compare["GROSS_REVENUE"].apply(lambda x: f"${x/1e6:,.0f}M"),
+                             marker_color=COLORS["coral"], text=rev_compare["GROSS_REVENUE"].apply(lambda x: f"${x/1e6:,.0f}M"),
                              textposition="outside"))
         fig.add_trace(go.Bar(name="Est. Annual Streaming Rev", y=rev_compare["ARTIST_NAME"],
                              x=rev_compare["est_annual_streaming"], orientation="h",
-                             marker_color="#00B4D8", text=rev_compare["est_annual_streaming"].apply(lambda x: f"${x/1e6:,.0f}M"),
+                             marker_color=COLORS["gold"], text=rev_compare["est_annual_streaming"].apply(lambda x: f"${x/1e6:,.0f}M"),
                              textposition="outside"))
         fig.update_layout(**PLOTLY_LAYOUT, barmode="group", height=500,
                           legend=dict(orientation="h", yanchor="bottom", y=1.02),
@@ -306,14 +308,14 @@ with tab2:
             st.subheader("Ticket Prices by Genre")
             price_genre = priced_df.groupby("GENRE")["PRICE_AVG"].mean().reset_index().sort_values("PRICE_AVG", ascending=True)
             fig = px.bar(price_genre, x="PRICE_AVG", y="GENRE", orientation="h",
-                         color="PRICE_AVG", color_continuous_scale=["#2EC4B6", "#FF9F1C"])
+                         color="PRICE_AVG", color_continuous_scale=COLORS["ombre_warm"])
             fig.update_layout(**PLOTLY_LAYOUT, showlegend=False, coloraxis_showscale=False, height=400)
             fig.update_traces(texttemplate="$%{x:,.0f}", textposition="outside")
             st.plotly_chart(fig, use_container_width=True)
 
         with col2:
             st.subheader("Price Distribution")
-            fig = px.histogram(priced_df, x="PRICE_AVG", nbins=20, color_discrete_sequence=[COLORS["primary"]])
+            fig = px.histogram(priced_df, x="PRICE_AVG", nbins=20, color_discrete_sequence=[COLORS["coral"]])
             fig.update_layout(**PLOTLY_LAYOUT, xaxis_title="Avg Ticket Price ($)", yaxis_title="Events", height=400)
             st.plotly_chart(fig, use_container_width=True)
             st.caption("From Ticketmaster API — 24% of events have public pricing (mostly smaller acts)")
@@ -367,7 +369,7 @@ with tab3:
                 fig = go.Figure()
                 fig.add_trace(go.Bar(x=["Tour Gross", "Est. Annual Streaming"],
                                      y=[t['GROSS_REVENUE'], est_annual_streaming],
-                                     marker_color=[COLORS["accent"], COLORS["primary"]],
+                                     marker_color=[COLORS["coral"], COLORS["gold"]],
                                      text=[f"${t['GROSS_REVENUE']/1e6:,.0f}M", f"${est_annual_streaming/1e6:,.0f}M"],
                                      textposition="outside"))
                 fig.update_layout(**PLOTLY_LAYOUT, height=300,
@@ -399,7 +401,7 @@ with tab3:
         if not scatter.empty:
             fig = px.scatter(scatter, x="MONTHLY_LISTENERS", y="event_count",
                              text="ARTIST_NAME", size="MONTHLY_LISTENERS",
-                             color="event_count", color_continuous_scale=["#E71D73", "#00B4D8", "#2EC4B6"],
+                             color="event_count", color_continuous_scale=COLORS["ombre"],
                              labels={"MONTHLY_LISTENERS": "Spotify Monthly Listeners", "event_count": "Live Events"})
             fig.update_traces(textposition="top center", textfont_size=9)
             fig.update_layout(**PLOTLY_LAYOUT, height=500, coloraxis_colorbar=dict(title="Events"))
@@ -413,7 +415,7 @@ with tab3:
             untapped = scatter[scatter["event_count"] <= 1].sort_values("MONTHLY_LISTENERS", ascending=False)
             if not untapped.empty:
                 fig = px.bar(untapped, x="MONTHLY_LISTENERS", y="ARTIST_NAME", orientation="h",
-                             color="MONTHLY_LISTENERS", color_continuous_scale=["#FF9F1C", "#E71D73"])
+                             color="MONTHLY_LISTENERS", color_continuous_scale=COLORS["ombre_warm"])
                 fig.update_layout(**PLOTLY_LAYOUT, height=400, showlegend=False, coloraxis_showscale=False,
                                   xaxis_title="Monthly Spotify Listeners")
                 fig.update_traces(texttemplate="%{x:,.0f}", textposition="outside", textfont_size=10)
@@ -462,7 +464,7 @@ with tab4:
         st.subheader("Events by State")
         state_counts = events.groupby("STATE").size().reset_index(name="Events").sort_values("Events", ascending=True).tail(15)
         fig = px.bar(state_counts, x="Events", y="STATE", orientation="h",
-                     color="Events", color_continuous_scale=["#023E8A", "#00B4D8"])
+                     color="Events", color_continuous_scale=COLORS["ombre_cool"])
         fig.update_layout(**PLOTLY_LAYOUT, showlegend=False, coloraxis_showscale=False, height=450)
         st.plotly_chart(fig, use_container_width=True)
 
@@ -475,7 +477,7 @@ with tab4:
         )
         venue_stats["Label"] = venue_stats["VENUE_NAME"] + " (" + venue_stats["STATE"] + ")"
         fig = px.bar(venue_stats.sort_values("Events"), x="Events", y="Label", orientation="h",
-                     color="Events", color_continuous_scale=["#1B4332", "#2EC4B6"])
+                     color="Events", color_continuous_scale=["#1B3A5C", "#D4A843"])
         fig.update_layout(**PLOTLY_LAYOUT, showlegend=False, coloraxis_showscale=False, height=450)
         st.plotly_chart(fig, use_container_width=True)
 
@@ -533,7 +535,7 @@ with tab5:
         dow = dow.sort_values("DAY_NAME").reset_index(drop=True)
         dow["color"] = dow["DAY_NAME"].isin(["Friday", "Saturday", "Sunday"]).map({True: "Weekend", False: "Weekday"})
         fig = px.bar(dow, x="DAY_NAME", y="Events", color="color",
-                     color_discrete_map={"Weekend": COLORS["accent"], "Weekday": COLORS["primary"]})
+                     color_discrete_map={"Weekend": COLORS["coral"], "Weekday": COLORS["gold"]})
         fig.update_layout(**PLOTLY_LAYOUT, showlegend=True, height=400, xaxis_title="", legend_title="")
         st.plotly_chart(fig, use_container_width=True)
 
@@ -560,6 +562,6 @@ with tab5:
         gdata = gdata.sort_values("DAY_NAME").reset_index(drop=True)
         gdata["Events"] = gdata["Events"].astype(int)
         fig = px.bar(gdata, x="DAY_NAME", y="Events", color="Events",
-                     color_continuous_scale=["#9B5DE5", "#F15BB5"])
+                     color_continuous_scale=COLORS["ombre_warm"])
         fig.update_layout(**PLOTLY_LAYOUT, showlegend=False, coloraxis_showscale=False, height=350, xaxis_title="")
         st.plotly_chart(fig, use_container_width=True)
