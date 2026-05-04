@@ -285,17 +285,21 @@ with tab2:
         fig = go.Figure()
         fig.add_trace(go.Bar(name="Tour Gross", y=rev_compare["ARTIST_NAME"],
                              x=rev_compare["GROSS_REVENUE"], orientation="h",
-                             marker_color=COLORS["coral"], text=rev_compare["GROSS_REVENUE"].apply(lambda x: f"${x/1e6:,.0f}M"),
-                             textposition="outside"))
+                             marker_color=COLORS["coral"],
+                             text=rev_compare["GROSS_REVENUE"].apply(lambda x: f"${x/1e6:,.0f}M"),
+                             textposition="outside", textfont_size=14))
         fig.add_trace(go.Bar(name="Est. Annual Streaming Rev", y=rev_compare["ARTIST_NAME"],
                              x=rev_compare["est_annual_streaming"], orientation="h",
-                             marker_color=COLORS["gold"], text=rev_compare["est_annual_streaming"].apply(lambda x: f"${x/1e6:,.0f}M"),
-                             textposition="outside"))
-        fig.update_layout(**PLOTLY_LAYOUT, barmode="group", height=500,
-                          legend=dict(orientation="h", yanchor="bottom", y=1.02),
-                          xaxis_title="Revenue ($)")
+                             marker_color=COLORS["gold"],
+                             text=rev_compare["est_annual_streaming"].apply(lambda x: f"${x/1e6:,.0f}M"),
+                             textposition="outside", textfont_size=14))
+        fig.update_layout(**PLOTLY_LAYOUT, barmode="group",
+                          height=max(500, len(rev_compare) * 60),
+                          legend=dict(orientation="h", yanchor="bottom", y=1.02, font=dict(size=14)),
+                          xaxis_title="Revenue ($)", xaxis=dict(tickfont=dict(size=13)),
+                          yaxis=dict(tickfont=dict(size=13)))
         st.plotly_chart(fig, use_container_width=True)
-        st.caption("Pink = verified tour gross. Blue = estimated annual Spotify streaming revenue (~50 streams/listener/month × $0.004 × 12 months). Live revenue dominates.")
+        st.caption("Coral = verified tour gross. Gold = estimated annual Spotify streaming revenue (~50 streams/listener/month × $0.004 × 12 months).")
 
     st.divider()
 
