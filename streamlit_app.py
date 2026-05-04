@@ -6,7 +6,6 @@ Multi-page dashboard connecting to Snowflake mart tables.
 import streamlit as st
 import snowflake.connector
 import pandas as pd
-import traceback
 
 st.set_page_config(page_title="Live Music Analytics", layout="wide")
 
@@ -76,6 +75,9 @@ CITY_COORDS = {
     ("Bethel", "NY"): (41.6693, -74.9260), ("Council Bluffs", "IA"): (41.2619, -95.8608),
 }
 
+# Industry benchmark: ~1-2% of monthly Spotify listeners in a region convert to ticket buyers
+LISTENER_TO_BUYER_RATE = 0.01
+
 # ── Snowflake Connection ─────────────────────────────────────────────────────
 
 @st.cache_resource
@@ -85,13 +87,9 @@ def get_connection():
     else:
         sf = st.secrets
     return snowflake.connector.connect(
-        account=sf["account"],
-        user=sf["user"],
-        password=sf["password"],
-        warehouse=sf["warehouse"],
-        database=sf["database"],
-        schema=sf["schema"],
-        role=sf["role"],
+        account=sf["account"], user=sf["user"], password=sf["password"],
+        warehouse=sf["warehouse"], database=sf["database"],
+        schema=sf["schema"], role=sf["role"],
     )
 
 
@@ -101,19 +99,16 @@ def run_query(query):
     cur = conn.cursor()
     cur.execute(query)
     columns = [desc[0] for desc in cur.description]
-    data = cur.fetchall()
-    return pd.DataFrame(data, columns=columns)
+    return pd.DataFrame(cur.fetchall(), columns=columns)
 
 
 def geocode(city, state):
-    """Look up lat/long for a city/state pair."""
     if pd.isna(city) or pd.isna(state):
         return None, None
     key = (str(city).strip(), str(state).strip())
     coords = CITY_COORDS.get(key)
     if coords:
         return coords
-    # Try partial match on city name
     for (c, s), (lat, lon) in CITY_COORDS.items():
         if s == key[1] and key[0].lower() in c.lower():
             return lat, lon
@@ -123,20 +118,20 @@ def geocode(city, state):
 # ── Load Data ────────────────────────────────────────────────────────────────
 
 try:
-    df = run_query("""
+    events = run_query("""
         SELECT f.EVENT_ID, f.EVENT_NAME,
                f.EVENT_DATE::VARCHAR as EVENT_DATE,
-               f.EVENT_TIME,
-               f.SALE_STATUS,
+               f.EVENT_TIME, f.SALE_STATUS,
                f.PRICE_MIN::FLOAT as PRICE_MIN,
                f.PRICE_MAX::FLOAT as PRICE_MAX,
                f.PRICE_AVG::FLOAT as PRICE_AVG,
                f.CURRENCY,
                a.ARTIST_NAME, a.GENRE,
                a.MONTHLY_LISTENERS::FLOAT as MONTHLY_LISTENERS,
-               a.SPOTIFY_URL,
                v.VENUE_NAME, v.CITY, v.STATE,
-               d.DAY_NAME, d.MONTH_NAME,
+               d.DAY_NAME,
+               d.MONTH_NAME,
+               d.MONTH_NUM::INT as MONTH_NUM,
                d.YEAR::INT as YEAR,
                d.QUARTER::INT as QUARTER,
                CASE WHEN d.IS_WEEKEND THEN 'Weekend' ELSE 'Weekday' END as IS_WEEKEND
@@ -145,21 +140,27 @@ try:
         LEFT JOIN RAW_MARTS.DIM_VENUES v ON f.VENUE_KEY = v.VENUE_KEY
         LEFT JOIN RAW_MARTS.DIM_DATES d ON f.DATE_KEY = d.DATE_KEY
     """)
+
+    # Load Spotify data separately (not dependent on event join)
+    spotify = run_query("""
+        SELECT ARTIST_NAME, MONTHLY_LISTENERS::FLOAT as MONTHLY_LISTENERS
+        FROM RAW_STAGING.STG_SPOTIFY_ARTISTS
+        WHERE MONTHLY_LISTENERS IS NOT NULL
+    """)
+
 except Exception as e:
     st.error(f"Failed to load data: {e}")
     st.stop()
 
-# Add geocoding
-coords = df.apply(lambda r: geocode(r["CITY"], r["STATE"]), axis=1)
-df["lat"] = coords.apply(lambda x: x[0] if x else None)
-df["lon"] = coords.apply(lambda x: x[1] if x else None)
+# Geocode events
+coords = events.apply(lambda r: geocode(r["CITY"], r["STATE"]), axis=1)
+events["lat"] = coords.apply(lambda x: x[0] if x else None)
+events["lon"] = coords.apply(lambda x: x[1] if x else None)
 
 # ── Title ────────────────────────────────────────────────────────────────────
 
 st.title("Live Music Analytics")
-st.caption("Combining Ticketmaster events with Spotify streaming data for entertainment BI insights")
-
-# ── Tabs ─────────────────────────────────────────────────────────────────────
+st.caption("Ticketmaster events + Spotify streaming data | Entertainment BI insights")
 
 tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "Overview", "Pricing Analytics", "Artist Insights", "Venues & Geography", "Time Trends"
@@ -172,44 +173,57 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs([
 with tab1:
     st.header("At a Glance")
 
-    # KPI cards
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Total Events", f"{df['EVENT_ID'].nunique():,}")
-    col2.metric("Unique Artists", f"{df['ARTIST_NAME'].nunique():,}")
-    col3.metric("Unique Venues", f"{df['VENUE_NAME'].nunique():,}")
-    priced = df[df["PRICE_AVG"].notna() & (df["PRICE_AVG"] > 0)]
+    col1, col2, col3, col4, col5 = st.columns(5)
+    col1.metric("Total Events", f"{events['EVENT_ID'].nunique():,}")
+    col2.metric("Unique Artists", f"{events['ARTIST_NAME'].nunique():,}")
+    col3.metric("Unique Venues", f"{events['VENUE_NAME'].nunique():,}")
+    priced = events[events["PRICE_AVG"].notna() & (events["PRICE_AVG"] > 0)]
     avg_p = priced["PRICE_AVG"].mean() if not priced.empty else None
     col4.metric("Avg Ticket Price", f"${avg_p:,.0f}" if avg_p else "N/A")
+    col5.metric("Spotify Artists Tracked", f"{len(spotify)}")
 
     st.divider()
 
-    # Top 10s
     col_left, col_mid, col_right = st.columns(3)
 
     with col_left:
         st.subheader("Top 10 Genres")
-        top_genres = df.groupby("GENRE").size().reset_index(name="Events").sort_values("Events", ascending=False).head(10)
+        top_genres = events.groupby("GENRE").size().reset_index(name="Events").sort_values("Events", ascending=False).head(10)
         st.dataframe(top_genres, use_container_width=True, hide_index=True)
 
     with col_mid:
         st.subheader("Top 10 Artists")
-        top_artists = df.groupby("ARTIST_NAME").agg(
-            Events=("EVENT_ID", "count"),
-            Listeners=("MONTHLY_LISTENERS", "first")
+        top_artists = events.groupby("ARTIST_NAME").agg(
+            Events=("EVENT_ID", "count")
         ).reset_index().sort_values("Events", ascending=False).head(10)
-        top_artists["Listeners"] = top_artists["Listeners"].apply(
+        # Merge Spotify listeners
+        top_artists = top_artists.merge(spotify, on="ARTIST_NAME", how="left")
+        top_artists["MONTHLY_LISTENERS"] = top_artists["MONTHLY_LISTENERS"].apply(
             lambda x: f"{x:,.0f}" if pd.notna(x) and x > 0 else "—"
         )
+        top_artists.columns = ["Artist", "Events", "Spotify Listeners"]
         st.dataframe(top_artists, use_container_width=True, hide_index=True)
 
     with col_right:
         st.subheader("Top 10 Venues")
-        top_venues = df.groupby("VENUE_NAME").agg(
-            Events=("EVENT_ID", "count"),
-            City=("CITY", "first"),
-            State=("STATE", "first")
+        top_venues = events.groupby("VENUE_NAME").agg(
+            Events=("EVENT_ID", "count"), City=("CITY", "first"), State=("STATE", "first")
         ).reset_index().sort_values("Events", ascending=False).head(10)
         st.dataframe(top_venues, use_container_width=True, hide_index=True)
+
+    st.divider()
+
+    # Spotify leaderboard
+    st.subheader("Spotify Streaming Leaderboard")
+    st.caption("Top artists by monthly listeners — streaming popularity as a demand signal")
+    spotify_display = spotify.sort_values("MONTHLY_LISTENERS", ascending=False).copy()
+    # Check if they have events
+    event_artists = set(events["ARTIST_NAME"].dropna().str.lower())
+    spotify_display["Has Live Events"] = spotify_display["ARTIST_NAME"].str.lower().isin(event_artists).map({True: "Yes", False: "No"})
+    spotify_display["Est. Ticket Buyers (1%)"] = (spotify_display["MONTHLY_LISTENERS"] * LISTENER_TO_BUYER_RATE).apply(lambda x: f"{x:,.0f}")
+    spotify_display["MONTHLY_LISTENERS"] = spotify_display["MONTHLY_LISTENERS"].apply(lambda x: f"{x:,.0f}")
+    spotify_display.columns = ["Artist", "Monthly Listeners", "Has Live Events", "Est. Ticket Buyers (1%)"]
+    st.dataframe(spotify_display, use_container_width=True, hide_index=True)
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # TAB 2: PRICING ANALYTICS
@@ -218,83 +232,83 @@ with tab1:
 with tab2:
     st.header("Pricing Analytics")
 
-    priced_df = df[df["PRICE_AVG"].notna() & (df["PRICE_AVG"] > 0)].copy()
+    priced_df = events[events["PRICE_AVG"].notna() & (events["PRICE_AVG"] > 0)].copy()
 
     if priced_df.empty:
         st.info("No pricing data available.")
     else:
-        # Price by genre
         col1, col2 = st.columns(2)
 
         with col1:
             st.subheader("Average Ticket Price by Genre")
             price_genre = (
                 priced_df.groupby("GENRE")["PRICE_AVG"]
-                .mean()
-                .reset_index()
+                .mean().reset_index()
                 .sort_values("PRICE_AVG", ascending=True)
             )
             st.bar_chart(price_genre, x="GENRE", y="PRICE_AVG", horizontal=True)
 
         with col2:
             st.subheader("Price Distribution")
-            st.bar_chart(
-                priced_df["PRICE_AVG"]
-                .apply(lambda x: f"${int(x // 25 * 25)}-${int(x // 25 * 25 + 25)}")
-                .value_counts()
-                .sort_index()
-                .reset_index()
-                .rename(columns={"index": "Range", "PRICE_AVG": "Range", "count": "Events"}),
-                x="Range", y="Events"
-            )
+            bins = [0, 25, 50, 75, 100, 150, 200, 300, 500]
+            labels = ["$0-25", "$25-50", "$50-75", "$75-100", "$100-150", "$150-200", "$200-300", "$300+"]
+            priced_df["price_bucket"] = pd.cut(priced_df["PRICE_AVG"], bins=bins, labels=labels, right=True)
+            hist = priced_df["price_bucket"].value_counts().sort_index().reset_index()
+            hist.columns = ["Price Range", "Events"]
+            st.bar_chart(hist, x="Price Range", y="Events")
 
         st.divider()
 
-        # Streaming vs ticket pricing
-        st.subheader("Streaming Popularity vs Ticket Pricing")
-        st.caption("Do artists with more Spotify listeners command higher ticket prices?")
+        # Streaming royalties vs ticket revenue comparison
+        st.subheader("Streaming Revenue vs Live Revenue")
+        st.caption("Estimated per-artist comparison: Spotify pays ~$0.004/stream. A single ticket sale can equal thousands of streams.")
 
-        artist_pricing = (
+        artist_revenue = (
             priced_df.groupby("ARTIST_NAME")
-            .agg(
-                avg_price=("PRICE_AVG", "mean"),
-                monthly_listeners=("MONTHLY_LISTENERS", "first"),
-                events=("EVENT_ID", "count"),
-            )
+            .agg(events=("EVENT_ID", "count"), avg_price=("PRICE_AVG", "mean"))
             .reset_index()
+            .merge(spotify, on="ARTIST_NAME", how="inner")
         )
-        artist_pricing = artist_pricing[
-            artist_pricing["monthly_listeners"].notna() & (artist_pricing["monthly_listeners"] > 0)
-        ]
 
-        if not artist_pricing.empty:
-            st.scatter_chart(artist_pricing, x="monthly_listeners", y="avg_price")
-            st.caption("X = Spotify monthly listeners, Y = average ticket price")
+        if not artist_revenue.empty:
+            # Spotify pays ~$0.004 per stream; assume avg 50 streams/listener/month
+            artist_revenue["est_monthly_streaming_rev"] = artist_revenue["MONTHLY_LISTENERS"] * 50 * 0.004
+            artist_revenue["est_ticket_rev_per_event"] = artist_revenue["avg_price"] * 5000  # assume 5k tickets per event
+            artist_revenue["est_total_ticket_rev"] = artist_revenue["est_ticket_rev_per_event"] * artist_revenue["events"]
+
+            display_rev = artist_revenue[["ARTIST_NAME", "MONTHLY_LISTENERS", "est_monthly_streaming_rev", "events", "avg_price", "est_total_ticket_rev"]].copy()
+            display_rev["MONTHLY_LISTENERS"] = display_rev["MONTHLY_LISTENERS"].apply(lambda x: f"{x:,.0f}")
+            display_rev["est_monthly_streaming_rev"] = display_rev["est_monthly_streaming_rev"].apply(lambda x: f"${x:,.0f}")
+            display_rev["avg_price"] = display_rev["avg_price"].apply(lambda x: f"${x:,.0f}")
+            display_rev["est_total_ticket_rev"] = display_rev["est_total_ticket_rev"].apply(lambda x: f"${x:,.0f}")
+            display_rev.columns = ["Artist", "Monthly Listeners", "Est. Monthly Streaming Rev", "Live Events", "Avg Ticket Price", "Est. Live Revenue"]
+            st.dataframe(display_rev, use_container_width=True, hide_index=True)
+            st.caption("Assumptions: ~50 streams/listener/month, $0.004/stream, ~5,000 tickets/event. Live revenue dwarfs streaming for touring artists.")
+        else:
+            st.info("No overlap between priced events and Spotify-tracked artists.")
 
         st.divider()
 
         # Revenue opportunity combos
         st.subheader("Top Revenue Opportunities")
-        st.caption("Artist + venue + market combos ranked by estimated revenue potential (avg price x event count x streaming signal)")
+        st.caption("Artist + venue + market combos ranked by estimated revenue (avg price x est. attendance)")
 
         combos = (
             priced_df.groupby(["ARTIST_NAME", "VENUE_NAME", "CITY", "STATE"])
-            .agg(
-                events=("EVENT_ID", "count"),
-                avg_price=("PRICE_AVG", "mean"),
-                listeners=("MONTHLY_LISTENERS", "first"),
-            )
+            .agg(events=("EVENT_ID", "count"), avg_price=("PRICE_AVG", "mean"))
             .reset_index()
         )
-        combos["est_revenue"] = combos["avg_price"] * combos["events"]
-        combos["listeners"] = combos["listeners"].apply(
-            lambda x: f"{x:,.0f}" if pd.notna(x) and x > 0 else "—"
-        )
-        combos["avg_price"] = combos["avg_price"].apply(lambda x: f"${x:,.0f}")
+        combos = combos.merge(spotify.rename(columns={"MONTHLY_LISTENERS": "listeners"}), on="ARTIST_NAME", how="left")
+        combos["est_buyers"] = combos["listeners"].apply(lambda x: x * LISTENER_TO_BUYER_RATE if pd.notna(x) else None)
+        combos["est_revenue"] = combos["avg_price"] * combos["events"] * 5000  # 5k tickets assumed
         combos = combos.sort_values("est_revenue", ascending=False).head(15)
-        combos["est_revenue"] = combos["est_revenue"].apply(lambda x: f"${x:,.0f}")
-        combos.columns = ["Artist", "Venue", "City", "State", "Events", "Avg Price", "Listeners", "Est Revenue"]
-        st.dataframe(combos, use_container_width=True, hide_index=True)
+
+        display_combos = combos[["ARTIST_NAME", "VENUE_NAME", "CITY", "STATE", "events", "avg_price", "listeners", "est_revenue"]].copy()
+        display_combos["avg_price"] = display_combos["avg_price"].apply(lambda x: f"${x:,.0f}")
+        display_combos["listeners"] = display_combos["listeners"].apply(lambda x: f"{x:,.0f}" if pd.notna(x) else "—")
+        display_combos["est_revenue"] = display_combos["est_revenue"].apply(lambda x: f"${x:,.0f}")
+        display_combos.columns = ["Artist", "Venue", "City", "State", "Events", "Avg Price", "Spotify Listeners", "Est. Revenue"]
+        st.dataframe(display_combos, use_container_width=True, hide_index=True)
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # TAB 3: ARTIST INSIGHTS
@@ -303,82 +317,100 @@ with tab2:
 with tab3:
     st.header("Artist Insights")
 
-    # Artist search
-    artists_list = sorted(df["ARTIST_NAME"].dropna().unique().tolist())
+    # Combine all known artists
+    event_artists = events[["ARTIST_NAME"]].dropna().drop_duplicates()
+    all_known = pd.concat([event_artists, spotify[["ARTIST_NAME"]]]).drop_duplicates().sort_values("ARTIST_NAME")
+    artists_list = all_known["ARTIST_NAME"].tolist()
+
     selected_artist = st.selectbox("Search for an artist", ["All Artists"] + artists_list)
 
     if selected_artist != "All Artists":
-        adf = df[df["ARTIST_NAME"] == selected_artist]
+        adf = events[events["ARTIST_NAME"] == selected_artist]
+        sp_row = spotify[spotify["ARTIST_NAME"].str.lower() == selected_artist.lower()]
+
+        listeners = sp_row["MONTHLY_LISTENERS"].iloc[0] if not sp_row.empty else None
+        num_events = adf["EVENT_ID"].nunique()
+        genre = adf["GENRE"].mode().iloc[0] if not adf.empty and not adf["GENRE"].mode().empty else "—"
+        avg_ticket = adf[adf["PRICE_AVG"] > 0]["PRICE_AVG"].mean() if not adf.empty else None
 
         # Artist card
-        col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Artist", selected_artist)
-        genre = adf["GENRE"].mode().iloc[0] if not adf["GENRE"].mode().empty else "Unknown"
-        col2.metric("Genre", genre)
-        listeners = adf["MONTHLY_LISTENERS"].iloc[0] if not adf.empty else 0
-        col3.metric("Spotify Listeners", f"{listeners:,.0f}" if pd.notna(listeners) and listeners > 0 else "N/A")
-        col4.metric("Live Events", f"{adf['EVENT_ID'].nunique()}")
+        col1, col2, col3, col4, col5 = st.columns(5)
+        col1.metric("Genre", genre)
+        col2.metric("Spotify Listeners", f"{listeners:,.0f}" if listeners else "N/A")
+        col3.metric("Live Events", f"{num_events}")
+        col4.metric("Avg Ticket Price", f"${avg_ticket:,.0f}" if avg_ticket else "N/A")
+        est_buyers = listeners * LISTENER_TO_BUYER_RATE if listeners else None
+        col5.metric("Est. Ticket Buyers (1%)", f"{est_buyers:,.0f}" if est_buyers else "N/A")
 
-        st.divider()
+        if listeners and avg_ticket:
+            st.divider()
+            st.subheader("Revenue Potential")
+            est_event_rev = avg_ticket * 5000
+            est_streaming_monthly = listeners * 50 * 0.004
+            col1, col2, col3 = st.columns(3)
+            col1.metric("Est. Revenue per Event", f"${est_event_rev:,.0f}", help="Assumes ~5,000 tickets sold")
+            col2.metric("Est. Monthly Streaming Rev", f"${est_streaming_monthly:,.0f}", help="~50 streams/listener x $0.004")
+            col3.metric("Streaming-to-Live Multiplier", f"{est_event_rev / max(est_streaming_monthly, 1):,.1f}x", help="How many months of streaming = 1 event")
 
-        st.subheader(f"Events for {selected_artist}")
-        event_table = adf[["EVENT_NAME", "VENUE_NAME", "CITY", "STATE", "EVENT_DATE", "PRICE_AVG"]].copy()
-        event_table["PRICE_AVG"] = event_table["PRICE_AVG"].apply(
-            lambda x: f"${x:,.0f}" if pd.notna(x) and x > 0 else "—"
-        )
-        event_table.columns = ["Event", "Venue", "City", "State", "Date", "Avg Price"]
-        st.dataframe(event_table, use_container_width=True, hide_index=True)
+        if num_events > 0:
+            st.divider()
+            st.subheader(f"Events for {selected_artist}")
+            event_table = adf[["EVENT_NAME", "VENUE_NAME", "CITY", "STATE", "EVENT_DATE", "PRICE_AVG"]].copy()
+            event_table["PRICE_AVG"] = event_table["PRICE_AVG"].apply(
+                lambda x: f"${x:,.0f}" if pd.notna(x) and x > 0 else "—"
+            )
+            event_table.columns = ["Event", "Venue", "City", "State", "Date", "Avg Price"]
+            st.dataframe(event_table, use_container_width=True, hide_index=True)
+        elif listeners:
+            st.info(f"{selected_artist} has {listeners:,.0f} monthly listeners but no live events in our data — potential booking opportunity.")
 
     else:
-        # Scatter: listeners vs event count
+        # Scatter: all Spotify artists with event counts
         st.subheader("Streaming Popularity vs Live Event Count")
-        st.caption("**Diagnostic:** Do streaming-popular artists have more live events?")
+        st.caption("**Diagnostic:** Do streaming-popular artists have more live events? Artists with high listeners but few events are untapped opportunities.")
 
-        artist_stats = (
-            df.groupby("ARTIST_NAME")
-            .agg(
-                event_count=("EVENT_ID", "count"),
-                monthly_listeners=("MONTHLY_LISTENERS", "first"),
-                genre=("GENRE", "first"),
-            )
-            .reset_index()
-        )
-        artist_stats = artist_stats[
-            artist_stats["monthly_listeners"].notna() & (artist_stats["monthly_listeners"] > 0)
-        ]
+        event_counts = events.groupby("ARTIST_NAME").agg(event_count=("EVENT_ID", "count")).reset_index()
+        scatter_data = spotify.merge(event_counts, on="ARTIST_NAME", how="left").fillna({"event_count": 0})
 
-        if not artist_stats.empty:
-            st.scatter_chart(artist_stats, x="monthly_listeners", y="event_count", color="genre")
-            st.caption("Each dot is an artist colored by genre. X = Spotify listeners, Y = number of live events.")
+        if not scatter_data.empty:
+            st.scatter_chart(scatter_data, x="MONTHLY_LISTENERS", y="event_count")
+            st.caption("Each dot is a Spotify-tracked artist. X = monthly listeners, Y = live events in our data. Dots at Y=0 are booking opportunities.")
 
         st.divider()
 
         # Untapped opportunities
-        st.subheader("Untapped Opportunities")
-        st.caption("Artists with high streaming popularity but few live events — potential booking targets")
+        st.subheader("Untapped Booking Opportunities")
+        st.caption("Spotify artists with high streaming but no/few live events in our data")
 
-        all_artists = (
-            df.groupby("ARTIST_NAME")
-            .agg(
-                events=("EVENT_ID", "count"),
-                listeners=("MONTHLY_LISTENERS", "first"),
-                genre=("GENRE", "first"),
-            )
-            .reset_index()
-        )
-        all_artists = all_artists[
-            all_artists["listeners"].notna() & (all_artists["listeners"] > 0)
-        ].copy()
-
-        if not all_artists.empty:
-            median_events = all_artists["events"].median()
-            median_listeners = all_artists["listeners"].median()
-            untapped = all_artists[
-                (all_artists["listeners"] > median_listeners) & (all_artists["events"] <= median_events)
-            ].sort_values("listeners", ascending=False).head(10)
-            untapped["listeners"] = untapped["listeners"].apply(lambda x: f"{x:,.0f}")
-            untapped.columns = ["Artist", "Events", "Spotify Listeners", "Genre"]
+        if not scatter_data.empty:
+            untapped = scatter_data[scatter_data["event_count"] <= 1].sort_values("MONTHLY_LISTENERS", ascending=False)
+            untapped["est_buyers"] = (untapped["MONTHLY_LISTENERS"] * LISTENER_TO_BUYER_RATE).apply(lambda x: f"{x:,.0f}")
+            untapped["MONTHLY_LISTENERS"] = untapped["MONTHLY_LISTENERS"].apply(lambda x: f"{x:,.0f}")
+            untapped.columns = ["Artist", "Monthly Listeners", "Live Events", "Est. Ticket Buyers (1%)"]
             st.dataframe(untapped, use_container_width=True, hide_index=True)
+
+        st.divider()
+
+        # Full artist comparison table
+        st.subheader("Full Artist Comparison")
+        all_compare = events.groupby("ARTIST_NAME").agg(
+            events=("EVENT_ID", "count"),
+            avg_price=("PRICE_AVG", "mean"),
+            genres=("GENRE", "first"),
+            states=("STATE", lambda x: ", ".join(sorted(x.dropna().unique())))
+        ).reset_index().merge(spotify, on="ARTIST_NAME", how="outer")
+
+        all_compare["MONTHLY_LISTENERS"] = all_compare["MONTHLY_LISTENERS"].apply(
+            lambda x: f"{x:,.0f}" if pd.notna(x) and x > 0 else "—"
+        )
+        all_compare["avg_price"] = all_compare["avg_price"].apply(
+            lambda x: f"${x:,.0f}" if pd.notna(x) and x > 0 else "—"
+        )
+        all_compare["events"] = all_compare["events"].fillna(0).astype(int)
+        all_compare = all_compare.sort_values("events", ascending=False).head(30)
+        all_compare.columns = ["Artist", "Events", "Avg Price", "Genre", "Markets", "Spotify Listeners"]
+        st.dataframe(all_compare, use_container_width=True, hide_index=True)
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # TAB 4: VENUES & GEOGRAPHY
@@ -390,37 +422,34 @@ with tab4:
     # Map
     st.subheader("Event Hotspot Map")
     map_data = (
-        df[df["lat"].notna()]
+        events[events["lat"].notna()]
         .groupby(["CITY", "STATE", "lat", "lon"])
         .agg(events=("EVENT_ID", "count"))
         .reset_index()
     )
 
     if not map_data.empty:
-        # Scale dot sizes
-        map_data["size"] = map_data["events"] * 50
+        map_data["size"] = map_data["events"] * 80
         st.map(map_data, latitude="lat", longitude="lon", size="size")
+        st.caption("Dot size = number of events in that city")
     else:
-        st.info("No geocoded event locations available.")
+        st.info("No geocoded locations available.")
 
     st.divider()
 
-    # State/city search
     col1, col2 = st.columns(2)
 
     with col1:
         st.subheader("Events by State")
-        state_counts = df.groupby("STATE").size().reset_index(name="Events").sort_values("Events", ascending=False)
+        state_counts = events.groupby("STATE").size().reset_index(name="Events").sort_values("Events", ascending=False)
         st.bar_chart(state_counts, x="STATE", y="Events")
 
     with col2:
         st.subheader("Top Venues")
         venue_stats = (
-            df.groupby(["VENUE_NAME", "CITY", "STATE"])
+            events.groupby(["VENUE_NAME", "CITY", "STATE"])
             .agg(Events=("EVENT_ID", "count"), Avg_Price=("PRICE_AVG", "mean"))
-            .reset_index()
-            .sort_values("Events", ascending=False)
-            .head(15)
+            .reset_index().sort_values("Events", ascending=False).head(15)
         )
         venue_stats["Avg_Price"] = venue_stats["Avg_Price"].apply(
             lambda x: f"${x:,.0f}" if pd.notna(x) and x > 0 else "—"
@@ -432,40 +461,40 @@ with tab4:
 
     # Market profiles
     st.subheader("Market Profiles")
-    st.caption("Select a state to see its market profile — genre mix, avg pricing, and top artists")
+    st.caption("Select a state to see its audience profile — genre preferences, pricing, and top artists")
 
-    states_list = sorted(df["STATE"].dropna().unique().tolist())
+    states_list = sorted(events["STATE"].dropna().unique().tolist())
     selected_state = st.selectbox("Select a state", states_list)
 
     if selected_state:
-        state_df = df[df["STATE"] == selected_state]
+        state_df = events[events["STATE"] == selected_state]
 
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Events in Market", f"{state_df['EVENT_ID'].nunique():,}")
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Events", f"{state_df['EVENT_ID'].nunique():,}")
         col2.metric("Venues", f"{state_df['VENUE_NAME'].nunique():,}")
+        col3.metric("Artists", f"{state_df['ARTIST_NAME'].nunique():,}")
         state_priced = state_df[state_df["PRICE_AVG"].notna() & (state_df["PRICE_AVG"] > 0)]
         state_avg = state_priced["PRICE_AVG"].mean() if not state_priced.empty else None
-        col3.metric("Avg Ticket Price", f"${state_avg:,.0f}" if state_avg else "N/A")
+        col4.metric("Avg Ticket Price", f"${state_avg:,.0f}" if state_avg else "N/A")
 
         col_left, col_right = st.columns(2)
 
         with col_left:
-            st.markdown("**Genre Mix**")
+            st.markdown("**Genre Preferences**")
             genre_mix = state_df.groupby("GENRE").size().reset_index(name="Events").sort_values("Events", ascending=False)
             st.bar_chart(genre_mix, x="GENRE", y="Events")
 
         with col_right:
-            st.markdown("**Top Artists in Market**")
+            st.markdown("**Top Artists in This Market**")
             market_artists = (
-                state_df.groupby("ARTIST_NAME")
-                .agg(Events=("EVENT_ID", "count"), Listeners=("MONTHLY_LISTENERS", "first"))
-                .reset_index()
-                .sort_values("Events", ascending=False)
-                .head(10)
+                state_df.groupby("ARTIST_NAME").agg(Events=("EVENT_ID", "count"))
+                .reset_index().sort_values("Events", ascending=False).head(10)
+                .merge(spotify, on="ARTIST_NAME", how="left")
             )
-            market_artists["Listeners"] = market_artists["Listeners"].apply(
+            market_artists["MONTHLY_LISTENERS"] = market_artists["MONTHLY_LISTENERS"].apply(
                 lambda x: f"{x:,.0f}" if pd.notna(x) and x > 0 else "—"
             )
+            market_artists.columns = ["Artist", "Events", "Spotify Listeners"]
             st.dataframe(market_artists, use_container_width=True, hide_index=True)
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -481,25 +510,37 @@ with tab5:
 
     with col1:
         st.subheader("Events by Day of Week")
-        dow = df.groupby("DAY_NAME").size().reset_index(name="Events")
+        dow = events.groupby("DAY_NAME").size().reset_index(name="Events")
         dow["DAY_NAME"] = pd.Categorical(dow["DAY_NAME"], categories=day_order, ordered=True)
         dow = dow.sort_values("DAY_NAME").reset_index(drop=True)
         st.bar_chart(dow, x="DAY_NAME", y="Events")
 
     with col2:
         st.subheader("Weekend vs Weekday")
-        we = df.groupby("IS_WEEKEND").size().reset_index(name="Events")
+        we = events.groupby("IS_WEEKEND").size().reset_index(name="Events")
         st.bar_chart(we, x="IS_WEEKEND", y="Events")
 
     st.divider()
 
-    # Day of week by genre
-    st.subheader("When Do Different Genres Perform?")
-    genre_dow = df.groupby(["GENRE", "DAY_NAME"]).size().reset_index(name="Events")
-    genre_dow["DAY_NAME"] = pd.Categorical(genre_dow["DAY_NAME"], categories=day_order, ordered=True)
-    genre_dow = genre_dow.sort_values("DAY_NAME")
+    # Monthly trends
+    st.subheader("Events by Month")
+    month_order = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+    monthly = events.groupby("MONTH_NAME").size().reset_index(name="Events")
+    monthly["MONTH_NAME"] = pd.Categorical(monthly["MONTH_NAME"], categories=month_order, ordered=True)
+    monthly = monthly.sort_values("MONTH_NAME").reset_index(drop=True)
+    st.bar_chart(monthly, x="MONTH_NAME", y="Events")
 
-    genre_select = st.selectbox("Select a genre", sorted(df["GENRE"].dropna().unique().tolist()))
+    st.divider()
+
+    # Genre by day of week — show all days
+    st.subheader("When Do Different Genres Perform?")
+    genre_select = st.selectbox("Select a genre", sorted(events["GENRE"].dropna().unique().tolist()))
     if genre_select:
-        gdata = genre_dow[genre_dow["GENRE"] == genre_select]
+        gdata = events[events["GENRE"] == genre_select].groupby("DAY_NAME").size().reset_index(name="Events")
+        # Ensure all days show up
+        all_days = pd.DataFrame({"DAY_NAME": day_order})
+        gdata = all_days.merge(gdata, on="DAY_NAME", how="left").fillna(0)
+        gdata["DAY_NAME"] = pd.Categorical(gdata["DAY_NAME"], categories=day_order, ordered=True)
+        gdata = gdata.sort_values("DAY_NAME").reset_index(drop=True)
+        gdata["Events"] = gdata["Events"].astype(int)
         st.bar_chart(gdata, x="DAY_NAME", y="Events")
