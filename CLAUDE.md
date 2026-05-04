@@ -14,35 +14,49 @@ The main goals of this project are to:
 - Create a clean, organized repository that demonstrates technical and analytical skills
 
 ## Repository Structure
-- `data/raw/` contains raw API outputs or downloaded source files
-- `data/processed/` contains cleaned or transformed datasets
-- `sql/` contains schema definitions, data transformation logic, and analytical queries
-- `src/` contains Python scripts for extraction, transformation, and analysis
-- `notebooks/` contains exploratory notebooks if needed
-- `outputs/` contains generated reports, charts, or final outputs
-- `docs/` contains written project documentation such as the proposal
+- `src/` contains Python scripts for data extraction (Ticketmaster API, Spotify via Firecrawl)
+- `dbt_project/` contains dbt models for staging and mart transformations in Snowflake
+- `streamlit_app.py` is the interactive dashboard connected to Snowflake mart tables
+- `knowledge/` contains the knowledge base (raw sources and wiki pages)
+- `.github/workflows/` contains GitHub Actions pipelines for automated extraction
+- `docs/` contains project documentation including the proposal and slide content
 
 ## Tools and Technologies
-- Python
-- SQL
-- Git and GitHub
-- APIs such as Ticketmaster and Spotify
-- Potential visualization tools such as Looker or dashboards
+- Python (extraction scripts)
+- Snowflake (cloud data warehouse)
+- dbt (data transformation — staging views + mart tables)
+- Streamlit (interactive dashboard, deployed on Community Cloud)
+- GitHub Actions (automated daily extraction pipelines)
+- Firecrawl (web scraping for Spotify artist data)
 
 ## Development Notes
 When contributing code or making suggestions:
 - Keep the repository organized by function
 - Prefer clear and readable Python and SQL
-- Separate raw data, processed data, and final outputs
 - Do not commit secrets such as API keys or `.env` files
 - Maintain professional naming conventions for files and folders
 
-## Current Focus
-The current focus of the project is building the core data pipeline and repository structure, including:
-1. API data extraction
-2. SQL-ready data storage
-3. Basic transformation logic
-4. Business-oriented analytical outputs
+## Querying the Knowledge Base
+The `knowledge/` directory contains research on why combining streaming and live performance data matters for the entertainment industry.
+
+**How to query the knowledge base:**
+1. Start with `knowledge/index.md` for the full inventory of sources and wiki pages
+2. For high-level questions about the industry, refer to the wiki pages in `knowledge/wiki/`:
+   - `overview.md` — Industry landscape and why streaming + live data convergence matters
+   - `key-entities.md` — Major companies (AEG/AXS, Live Nation, Spotify, Chartmetric, Luminate)
+   - `themes.md` — Key trends (streaming-to-touring pipeline, dynamic pricing, fan segmentation)
+3. For detailed evidence or specific facts, search the raw sources in `knowledge/raw/` (17 files from 11+ sites including Pollstar, Billboard, Forbes, Spotify, IFPI)
+4. When answering questions about the knowledge base:
+   - Always cite which source file(s) the answer comes from
+   - Synthesize across multiple sources when possible rather than quoting a single source
+   - Connect findings back to the project's goal of demonstrating BI analyst workflows for live entertainment
+
+**Example queries this knowledge base can answer:**
+- "Why should entertainment companies combine streaming and ticketing data?"
+- "How does Spotify listener data help with tour routing decisions?"
+- "What is AXS's approach to ticketing technology and fan data?"
+- "How has live music revenue changed since the pandemic?"
+- "What role does dynamic pricing play in the concert industry?"
 
 ## Context for AI Assistance
 If using Claude to assist with this project:
