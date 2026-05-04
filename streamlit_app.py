@@ -128,6 +128,8 @@ try:
                f.CURRENCY,
                a.ARTIST_NAME, a.GENRE,
                a.MONTHLY_LISTENERS::FLOAT as MONTHLY_LISTENERS,
+               a.SG_SCORE::FLOAT as SG_SCORE,
+               a.SG_POPULARITY::FLOAT as SG_POPULARITY,
                v.VENUE_NAME, v.CITY, v.STATE,
                d.DAY_NAME,
                d.MONTH_NAME,
@@ -148,6 +150,16 @@ try:
         WHERE MONTHLY_LISTENERS IS NOT NULL
     """)
 
+    # Load SeatGeek performer data separately
+    seatgeek = run_query("""
+        SELECT PERFORMER_NAME as ARTIST_NAME,
+               SG_SCORE::FLOAT as SG_SCORE,
+               SG_POPULARITY::FLOAT as SG_POPULARITY,
+               UPCOMING_EVENTS::INT as SG_UPCOMING_EVENTS,
+               GENRES as SG_GENRES
+        FROM RAW_STAGING.STG_SEATGEEK_PERFORMERS
+    """)
+
 except Exception as e:
     st.error(f"Failed to load data: {e}")
     st.stop()
@@ -160,7 +172,7 @@ events["lon"] = coords.apply(lambda x: x[1] if x else None)
 # ── Title ────────────────────────────────────────────────────────────────────
 
 st.title("Live Music Analytics")
-st.caption("Ticketmaster events + Spotify streaming data | Entertainment BI insights")
+st.caption("Ticketmaster events + Spotify streaming + SeatGeek demand signals | Entertainment BI insights")
 
 tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "Overview", "Pricing Analytics", "Artist Insights", "Venues & Geography", "Time Trends"
@@ -213,17 +225,22 @@ with tab1:
 
     st.divider()
 
-    # Spotify leaderboard
-    st.subheader("Spotify Streaming Leaderboard")
-    st.caption("Top artists by monthly listeners — streaming popularity as a demand signal")
-    spotify_display = spotify.sort_values("MONTHLY_LISTENERS", ascending=False).copy()
-    # Check if they have events
-    event_artists = set(events["ARTIST_NAME"].dropna().str.lower())
-    spotify_display["Has Live Events"] = spotify_display["ARTIST_NAME"].str.lower().isin(event_artists).map({True: "Yes", False: "No"})
-    spotify_display["Est. Ticket Buyers (1%)"] = (spotify_display["MONTHLY_LISTENERS"] * LISTENER_TO_BUYER_RATE).apply(lambda x: f"{x:,.0f}")
-    spotify_display["MONTHLY_LISTENERS"] = spotify_display["MONTHLY_LISTENERS"].apply(lambda x: f"{x:,.0f}")
-    spotify_display.columns = ["Artist", "Monthly Listeners", "Has Live Events", "Est. Ticket Buyers (1%)"]
-    st.dataframe(spotify_display, use_container_width=True, hide_index=True)
+    # Three-signal demand leaderboard
+    st.subheader("Artist Demand Signals — Three Sources")
+    st.caption("Combining Spotify (streaming), SeatGeek (ticketing demand), and Ticketmaster (live events)")
+
+    event_counts = events.groupby("ARTIST_NAME").agg(tm_events=("EVENT_ID", "count")).reset_index()
+    demand = spotify.merge(seatgeek, on="ARTIST_NAME", how="outer").merge(event_counts, on="ARTIST_NAME", how="outer")
+    demand["tm_events"] = demand["tm_events"].fillna(0).astype(int)
+    demand = demand.sort_values("MONTHLY_LISTENERS", ascending=False, na_position="last").head(25)
+
+    display_demand = demand.copy()
+    display_demand["MONTHLY_LISTENERS"] = display_demand["MONTHLY_LISTENERS"].apply(lambda x: f"{x:,.0f}" if pd.notna(x) else "—")
+    display_demand["SG_SCORE"] = display_demand["SG_SCORE"].apply(lambda x: f"{x:.2f}" if pd.notna(x) else "—")
+    display_demand["SG_POPULARITY"] = display_demand["SG_POPULARITY"].apply(lambda x: f"{x:,.0f}" if pd.notna(x) and x > 0 else "—")
+    display_demand = display_demand[["ARTIST_NAME", "MONTHLY_LISTENERS", "SG_SCORE", "SG_POPULARITY", "tm_events"]]
+    display_demand.columns = ["Artist", "Spotify Listeners", "SeatGeek Score", "SeatGeek Popularity", "TM Events"]
+    st.dataframe(display_demand, use_container_width=True, hide_index=True)
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # TAB 2: PRICING ANALYTICS
@@ -327,20 +344,27 @@ with tab3:
     if selected_artist != "All Artists":
         adf = events[events["ARTIST_NAME"] == selected_artist]
         sp_row = spotify[spotify["ARTIST_NAME"].str.lower() == selected_artist.lower()]
+        sg_row = seatgeek[seatgeek["ARTIST_NAME"].str.lower() == selected_artist.lower()]
 
         listeners = sp_row["MONTHLY_LISTENERS"].iloc[0] if not sp_row.empty else None
+        sg_score = sg_row["SG_SCORE"].iloc[0] if not sg_row.empty and pd.notna(sg_row["SG_SCORE"].iloc[0]) else None
+        sg_pop = sg_row["SG_POPULARITY"].iloc[0] if not sg_row.empty and pd.notna(sg_row["SG_POPULARITY"].iloc[0]) else None
         num_events = adf["EVENT_ID"].nunique()
         genre = adf["GENRE"].mode().iloc[0] if not adf.empty and not adf["GENRE"].mode().empty else "—"
+        if genre == "—" and not sg_row.empty:
+            sg_genres = sg_row["SG_GENRES"].iloc[0]
+            genre = sg_genres if pd.notna(sg_genres) else "—"
         avg_ticket = adf[adf["PRICE_AVG"] > 0]["PRICE_AVG"].mean() if not adf.empty else None
 
-        # Artist card
-        col1, col2, col3, col4, col5 = st.columns(5)
+        # Artist card — 3 signal metrics
+        col1, col2, col3, col4, col5, col6 = st.columns(6)
         col1.metric("Genre", genre)
         col2.metric("Spotify Listeners", f"{listeners:,.0f}" if listeners else "N/A")
-        col3.metric("Live Events", f"{num_events}")
-        col4.metric("Avg Ticket Price", f"${avg_ticket:,.0f}" if avg_ticket else "N/A")
+        col3.metric("SeatGeek Score", f"{sg_score:.2f}" if sg_score else "N/A")
+        col4.metric("Live Events", f"{num_events}")
+        col5.metric("Avg Ticket Price", f"${avg_ticket:,.0f}" if avg_ticket else "Dynamic Pricing")
         est_buyers = listeners * LISTENER_TO_BUYER_RATE if listeners else None
-        col5.metric("Est. Ticket Buyers (1%)", f"{est_buyers:,.0f}" if est_buyers else "N/A")
+        col6.metric("Est. Ticket Buyers (1%)", f"{est_buyers:,.0f}" if est_buyers else "N/A")
 
         if listeners and avg_ticket:
             st.divider()
@@ -370,11 +394,23 @@ with tab3:
         st.caption("**Diagnostic:** Do streaming-popular artists have more live events? Artists with high listeners but few events are untapped opportunities.")
 
         event_counts = events.groupby("ARTIST_NAME").agg(event_count=("EVENT_ID", "count")).reset_index()
-        scatter_data = spotify.merge(event_counts, on="ARTIST_NAME", how="left").fillna({"event_count": 0})
+        event_counts["_merge_key"] = event_counts["ARTIST_NAME"].str.strip().str.lower()
+        spotify_copy = spotify.copy()
+        spotify_copy["_merge_key"] = spotify_copy["ARTIST_NAME"].str.strip().str.lower()
+        scatter_data = spotify_copy.merge(event_counts.drop(columns=["ARTIST_NAME"]), on="_merge_key", how="left").drop(columns=["_merge_key"]).fillna({"event_count": 0})
+
+        # Debug: show match rates
+        matched = scatter_data[scatter_data["event_count"] > 0]
+        unmatched = scatter_data[scatter_data["event_count"] == 0]
+        st.caption(f"Matched: {len(matched)} artists | Unmatched: {len(unmatched)} artists")
+        if not unmatched.empty:
+            with st.expander("Unmatched Spotify artists (click to debug)"):
+                st.write(unmatched[["ARTIST_NAME"]].values.tolist())
+                st.write("Ticketmaster artist sample:", event_counts["ARTIST_NAME"].head(20).tolist())
 
         if not scatter_data.empty:
             st.scatter_chart(scatter_data, x="MONTHLY_LISTENERS", y="event_count")
-            st.caption("Each dot is a Spotify-tracked artist. X = monthly listeners, Y = live events in our data. Dots at Y=0 are booking opportunities.")
+            st.caption("X-axis: Monthly Spotify Listeners | Y-axis: Number of Live Events in Dataset. Each dot is one artist. Artists near Y=0 with high X values represent untapped booking opportunities.")
 
         st.divider()
 
@@ -429,9 +465,38 @@ with tab4:
     )
 
     if not map_data.empty:
-        map_data["size"] = map_data["events"] * 80
-        st.map(map_data, latitude="lat", longitude="lon", size="size")
-        st.caption("Dot size = number of events in that city")
+        import pydeck as pdk
+
+        max_events = map_data["events"].max()
+        # Color gradient: light (few events) → red (many events)
+        map_data["color"] = map_data["events"].apply(lambda x: [
+            int(x / max_events * 220 + 35),
+            int((1 - x / max_events) * 120),
+            int((1 - x / max_events) * 80),
+            200
+        ])
+        map_data["size"] = map_data["events"] * 300 + 500
+
+        layer = pdk.Layer(
+            "ScatterplotLayer",
+            data=map_data,
+            get_position=["lon", "lat"],
+            get_radius="size",
+            get_fill_color="color",
+            pickable=True,
+            radius_min_pixels=5,
+            radius_max_pixels=50,
+        )
+
+        view = pdk.ViewState(latitude=39.5, longitude=-98.35, zoom=3.3, pitch=0)
+
+        st.pydeck_chart(pdk.Deck(
+            layers=[layer],
+            initial_view_state=view,
+            map_style="mapbox://styles/mapbox/dark-v10",
+            tooltip={"text": "{CITY}, {STATE}\n{events} events"},
+        ))
+        st.caption("Dot size and color intensity = number of events. Red = high concentration, light = few events.")
     else:
         st.info("No geocoded locations available.")
 

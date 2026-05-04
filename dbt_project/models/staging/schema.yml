@@ -34,3 +34,23 @@ models:
           - not_null:
               config:
                 severity: warn
+
+  - name: stg_seatgeek_performers
+    description: Staged SeatGeek performer popularity data
+    columns:
+      - name: performer_name
+        description: Performer name
+        tests:
+          - not_null
+      - name: sg_score
+        description: SeatGeek popularity score (0-1)
+        tests:
+          - not_null
+
+  - name: stg_seatgeek_events
+    description: Staged SeatGeek event data
+    columns:
+      - name: event_id
+        description: SeatGeek event identifier
+        tests:
+          - not_null

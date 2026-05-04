@@ -9,3 +9,7 @@ sources:
         description: Raw event data from Ticketmaster Discovery API
       - name: raw_spotify_artists
         description: Raw artist data scraped from Spotify via Firecrawl
+      - name: raw_seatgeek_performers
+        description: Raw performer popularity data from SeatGeek API
+      - name: raw_seatgeek_events
+        description: Raw event data from SeatGeek API
