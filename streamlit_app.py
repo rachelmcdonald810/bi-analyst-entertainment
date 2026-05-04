@@ -122,11 +122,20 @@ def get_connection():
 
 @st.cache_data(ttl=600)
 def run_query(query):
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute(query)
-    columns = [desc[0] for desc in cur.description]
-    return pd.DataFrame(cur.fetchall(), columns=columns)
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute(query)
+        columns = [desc[0] for desc in cur.description]
+        return pd.DataFrame(cur.fetchall(), columns=columns)
+    except Exception:
+        # Clear cached connection and retry on auth expiry
+        get_connection.clear()
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute(query)
+        columns = [desc[0] for desc in cur.description]
+        return pd.DataFrame(cur.fetchall(), columns=columns)
 
 def geocode(city, state):
     if pd.isna(city) or pd.isna(state):
