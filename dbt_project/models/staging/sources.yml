@@ -13,3 +13,5 @@ sources:
         description: Raw performer popularity data from SeatGeek API
       - name: raw_seatgeek_events
         description: Raw event data from SeatGeek API
+      - name: raw_tour_revenue
+        description: Verified tour revenue data from Pollstar, Billboard, Touring Data

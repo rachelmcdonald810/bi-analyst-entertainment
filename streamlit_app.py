@@ -160,6 +160,15 @@ try:
         FROM RAW_STAGING.STG_SEATGEEK_PERFORMERS
     """)
 
+    # Load verified tour revenue data
+    tour_rev = run_query("""
+        SELECT ARTIST_NAME, TOUR_NAME, GROSS_REVENUE::FLOAT as GROSS_REVENUE,
+               TICKETS_SOLD::FLOAT as TICKETS_SOLD,
+               AVG_TICKET_PRICE::FLOAT as AVG_TICKET_PRICE,
+               SHOWS::INT as SHOWS, TOUR_YEAR, SOURCE
+        FROM RAW_STAGING.STG_TOUR_REVENUE
+    """)
+
 except Exception as e:
     st.error(f"Failed to load data: {e}")
     st.stop()
@@ -228,6 +237,13 @@ with tab1:
     # Three-signal demand leaderboard
     st.subheader("Artist Demand Signals — Three Sources")
     st.caption("Combining Spotify (streaming), SeatGeek (ticketing demand), and Ticketmaster (live events)")
+    st.markdown("""
+    **How to read these metrics:**
+    - **Spotify Listeners** — Monthly listener count from Spotify. Higher = more streaming demand.
+    - **SeatGeek Score** — A 0–1 composite rating based on ticket sales velocity, listing volume, and price trends. Closer to 1.0 = near-peak demand (e.g., almost every listed event sells aggressively).
+    - **SeatGeek Popularity** — A ranking based on how often people search for an artist on SeatGeek and how many tickets are being bought/sold. Higher = more people actively looking for tickets. This is a volume signal — how much attention, not how fast tickets move.
+    - **TM Events** — Number of events currently listed on Ticketmaster.
+    """)
 
     event_counts = events.groupby("ARTIST_NAME").agg(tm_events=("EVENT_ID", "count")).reset_index()
     demand = spotify.merge(seatgeek, on="ARTIST_NAME", how="outer").merge(event_counts, on="ARTIST_NAME", how="outer")
@@ -276,55 +292,58 @@ with tab2:
 
         st.divider()
 
-        # Streaming royalties vs ticket revenue comparison
-        st.subheader("Streaming Revenue vs Live Revenue")
-        st.caption("Estimated per-artist comparison: Spotify pays ~$0.004/stream. A single ticket sale can equal thousands of streams.")
+        # REAL tour revenue vs streaming revenue
+        st.subheader("Streaming Revenue vs Tour Revenue — Verified Data")
+        st.caption("Real tour gross from Pollstar/Billboard vs estimated Spotify streaming revenue ($0.004/stream × ~50 streams/listener/month)")
 
-        artist_revenue = (
-            priced_df.groupby("ARTIST_NAME")
-            .agg(events=("EVENT_ID", "count"), avg_price=("PRICE_AVG", "mean"))
-            .reset_index()
-            .merge(spotify, on="ARTIST_NAME", how="inner")
-        )
+        rev_compare = tour_rev.merge(spotify, on="ARTIST_NAME", how="inner")
+        if not rev_compare.empty:
+            rev_compare["est_annual_streaming"] = rev_compare["MONTHLY_LISTENERS"] * 50 * 12 * 0.004
+            rev_compare["tour_vs_streaming"] = rev_compare["GROSS_REVENUE"] / rev_compare["est_annual_streaming"].clip(lower=1)
+            rev_compare = rev_compare.sort_values("GROSS_REVENUE", ascending=False)
 
-        if not artist_revenue.empty:
-            # Spotify pays ~$0.004 per stream; assume avg 50 streams/listener/month
-            artist_revenue["est_monthly_streaming_rev"] = artist_revenue["MONTHLY_LISTENERS"] * 50 * 0.004
-            artist_revenue["est_ticket_rev_per_event"] = artist_revenue["avg_price"] * 5000  # assume 5k tickets per event
-            artist_revenue["est_total_ticket_rev"] = artist_revenue["est_ticket_rev_per_event"] * artist_revenue["events"]
-
-            display_rev = artist_revenue[["ARTIST_NAME", "MONTHLY_LISTENERS", "est_monthly_streaming_rev", "events", "avg_price", "est_total_ticket_rev"]].copy()
+            display_rev = rev_compare[["ARTIST_NAME", "TOUR_NAME", "GROSS_REVENUE", "TICKETS_SOLD", "AVG_TICKET_PRICE", "MONTHLY_LISTENERS", "est_annual_streaming", "tour_vs_streaming"]].copy()
+            display_rev["GROSS_REVENUE"] = display_rev["GROSS_REVENUE"].apply(lambda x: f"${x:,.0f}")
+            display_rev["TICKETS_SOLD"] = display_rev["TICKETS_SOLD"].apply(lambda x: f"{x:,.0f}")
+            display_rev["AVG_TICKET_PRICE"] = display_rev["AVG_TICKET_PRICE"].apply(lambda x: f"${x:,.0f}")
             display_rev["MONTHLY_LISTENERS"] = display_rev["MONTHLY_LISTENERS"].apply(lambda x: f"{x:,.0f}")
-            display_rev["est_monthly_streaming_rev"] = display_rev["est_monthly_streaming_rev"].apply(lambda x: f"${x:,.0f}")
-            display_rev["avg_price"] = display_rev["avg_price"].apply(lambda x: f"${x:,.0f}")
-            display_rev["est_total_ticket_rev"] = display_rev["est_total_ticket_rev"].apply(lambda x: f"${x:,.0f}")
-            display_rev.columns = ["Artist", "Monthly Listeners", "Est. Monthly Streaming Rev", "Live Events", "Avg Ticket Price", "Est. Live Revenue"]
+            display_rev["est_annual_streaming"] = display_rev["est_annual_streaming"].apply(lambda x: f"${x:,.0f}")
+            display_rev["tour_vs_streaming"] = display_rev["tour_vs_streaming"].apply(lambda x: f"{x:,.0f}x")
+            display_rev.columns = ["Artist", "Tour", "Tour Gross", "Tickets Sold", "Avg Ticket", "Spotify Listeners", "Est. Annual Streaming Rev", "Tour / Streaming"]
             st.dataframe(display_rev, use_container_width=True, hide_index=True)
-            st.caption("Assumptions: ~50 streams/listener/month, $0.004/stream, ~5,000 tickets/event. Live revenue dwarfs streaming for touring artists.")
-        else:
-            st.info("No overlap between priced events and Spotify-tracked artists.")
+            st.caption("Sources: Pollstar, Billboard Boxscore, Touring Data. Streaming estimate: ~50 streams/listener/month × $0.004/stream × 12 months.")
 
         st.divider()
 
-        # Revenue opportunity combos
-        st.subheader("Top Revenue Opportunities")
-        st.caption("Artist + venue + market combos ranked by estimated revenue (avg price x est. attendance)")
+        # Full tour revenue table
+        st.subheader("Verified Tour Revenue — All 20 Artists")
+        st.caption("Real gross revenue, tickets sold, and avg ticket price from industry sources")
+
+        tour_display = tour_rev.sort_values("GROSS_REVENUE", ascending=False).copy()
+        tour_display["GROSS_REVENUE"] = tour_display["GROSS_REVENUE"].apply(lambda x: f"${x:,.0f}")
+        tour_display["TICKETS_SOLD"] = tour_display["TICKETS_SOLD"].apply(lambda x: f"{x:,.0f}")
+        tour_display["AVG_TICKET_PRICE"] = tour_display["AVG_TICKET_PRICE"].apply(lambda x: f"${x:,.0f}")
+        tour_display.columns = ["Artist", "Tour", "Gross Revenue", "Tickets Sold", "Avg Ticket", "Shows", "Year", "Source"]
+        st.dataframe(tour_display, use_container_width=True, hide_index=True)
+
+        st.divider()
+
+        # Smaller acts with TM pricing
+        st.subheader("Ticketmaster Pricing — Smaller Acts")
+        st.caption("Events where Ticketmaster exposes pricing through the public API (24% of events)")
 
         combos = (
             priced_df.groupby(["ARTIST_NAME", "VENUE_NAME", "CITY", "STATE"])
             .agg(events=("EVENT_ID", "count"), avg_price=("PRICE_AVG", "mean"))
             .reset_index()
         )
-        combos = combos.merge(spotify.rename(columns={"MONTHLY_LISTENERS": "listeners"}), on="ARTIST_NAME", how="left")
-        combos["est_buyers"] = combos["listeners"].apply(lambda x: x * LISTENER_TO_BUYER_RATE if pd.notna(x) else None)
-        combos["est_revenue"] = combos["avg_price"] * combos["events"] * 5000  # 5k tickets assumed
+        combos["est_revenue"] = combos["avg_price"] * combos["events"] * 2000
         combos = combos.sort_values("est_revenue", ascending=False).head(15)
 
-        display_combos = combos[["ARTIST_NAME", "VENUE_NAME", "CITY", "STATE", "events", "avg_price", "listeners", "est_revenue"]].copy()
+        display_combos = combos[["ARTIST_NAME", "VENUE_NAME", "CITY", "STATE", "events", "avg_price", "est_revenue"]].copy()
         display_combos["avg_price"] = display_combos["avg_price"].apply(lambda x: f"${x:,.0f}")
-        display_combos["listeners"] = display_combos["listeners"].apply(lambda x: f"{x:,.0f}" if pd.notna(x) else "—")
         display_combos["est_revenue"] = display_combos["est_revenue"].apply(lambda x: f"${x:,.0f}")
-        display_combos.columns = ["Artist", "Venue", "City", "State", "Events", "Avg Price", "Spotify Listeners", "Est. Revenue"]
+        display_combos.columns = ["Artist", "Venue", "City", "State", "Events", "Avg Price", "Est. Revenue"]
         st.dataframe(display_combos, use_container_width=True, hide_index=True)
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -357,6 +376,7 @@ with tab3:
         avg_ticket = adf[adf["PRICE_AVG"] > 0]["PRICE_AVG"].mean() if not adf.empty else None
 
         # Artist card — 3 signal metrics
+        st.caption("**SeatGeek Score:** 0–1 rating based on ticket sales velocity and price trends (closer to 1 = near-peak demand) | **SeatGeek Popularity:** ranking by search volume and ticket activity (higher = more attention)")
         col1, col2, col3, col4, col5, col6 = st.columns(6)
         col1.metric("Genre", genre)
         col2.metric("Spotify Listeners", f"{listeners:,.0f}" if listeners else "N/A")
@@ -366,15 +386,38 @@ with tab3:
         est_buyers = listeners * LISTENER_TO_BUYER_RATE if listeners else None
         col6.metric("Est. Ticket Buyers (1%)", f"{est_buyers:,.0f}" if est_buyers else "N/A")
 
-        if listeners and avg_ticket:
+        # Show verified tour revenue if available
+        artist_tour = tour_rev[tour_rev["ARTIST_NAME"].str.lower() == selected_artist.lower()]
+        if not artist_tour.empty:
             st.divider()
-            st.subheader("Revenue Potential")
+            st.subheader("Verified Tour Revenue")
+            t = artist_tour.iloc[0]
+            col1, col2, col3, col4 = st.columns(4)
+            col1.metric("Tour Gross", f"${t['GROSS_REVENUE']:,.0f}")
+            col2.metric("Tickets Sold", f"{t['TICKETS_SOLD']:,.0f}")
+            col3.metric("Avg Ticket Price", f"${t['AVG_TICKET_PRICE']:,.0f}")
+            col4.metric("Shows", f"{t['SHOWS']}")
+            st.caption(f"**{t['TOUR_NAME']}** ({t['TOUR_YEAR']}) — Source: {t['SOURCE']}")
+
+            if listeners:
+                st.divider()
+                st.subheader("Streaming vs Live Revenue")
+                est_annual_streaming = listeners * 50 * 12 * 0.004
+                col1, col2, col3 = st.columns(3)
+                col1.metric("Tour Gross Revenue", f"${t['GROSS_REVENUE']:,.0f}")
+                col2.metric("Est. Annual Streaming Rev", f"${est_annual_streaming:,.0f}", help="~50 streams/listener/month × $0.004 × 12 months")
+                ratio = t['GROSS_REVENUE'] / max(est_annual_streaming, 1)
+                col3.metric("Tour / Streaming Ratio", f"{ratio:,.0f}x", help="How many years of streaming revenue = one tour")
+
+        elif listeners and avg_ticket:
+            st.divider()
+            st.subheader("Estimated Revenue Potential")
             est_event_rev = avg_ticket * 5000
             est_streaming_monthly = listeners * 50 * 0.004
             col1, col2, col3 = st.columns(3)
             col1.metric("Est. Revenue per Event", f"${est_event_rev:,.0f}", help="Assumes ~5,000 tickets sold")
             col2.metric("Est. Monthly Streaming Rev", f"${est_streaming_monthly:,.0f}", help="~50 streams/listener x $0.004")
-            col3.metric("Streaming-to-Live Multiplier", f"{est_event_rev / max(est_streaming_monthly, 1):,.1f}x", help="How many months of streaming = 1 event")
+            col3.metric("Streaming-to-Live Multiplier", f"{est_event_rev / max(est_streaming_monthly, 1):,.1f}x")
 
         if num_events > 0:
             st.divider()
