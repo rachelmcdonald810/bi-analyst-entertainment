@@ -45,10 +45,17 @@ def run_query(query):
 try:
     fact_events = run_query("""
         SELECT f.EVENT_ID, f.EVENT_NAME, f.EVENT_DATE, f.EVENT_TIME,
-               f.SALE_STATUS, f.PRICE_MIN, f.PRICE_MAX, f.PRICE_AVG, f.CURRENCY,
-               a.ARTIST_NAME, a.GENRE, a.MONTHLY_LISTENERS, a.SPOTIFY_URL,
+               f.SALE_STATUS,
+               f.PRICE_MIN::FLOAT as PRICE_MIN,
+               f.PRICE_MAX::FLOAT as PRICE_MAX,
+               f.PRICE_AVG::FLOAT as PRICE_AVG,
+               f.CURRENCY,
+               a.ARTIST_NAME, a.GENRE,
+               a.MONTHLY_LISTENERS::FLOAT as MONTHLY_LISTENERS,
+               a.SPOTIFY_URL,
                v.VENUE_NAME, v.CITY, v.STATE,
-               d.DAY_NAME, d.MONTH_NAME, d.YEAR, d.QUARTER, d.IS_WEEKEND
+               d.DAY_NAME, d.MONTH_NAME, d.YEAR, d.QUARTER,
+               CASE WHEN d.IS_WEEKEND THEN 'Weekend' ELSE 'Weekday' END as IS_WEEKEND
         FROM RAW_MARTS.FACT_EVENTS f
         LEFT JOIN RAW_MARTS.DIM_ARTISTS a ON f.ARTIST_KEY = a.ARTIST_KEY
         LEFT JOIN RAW_MARTS.DIM_VENUES v ON f.VENUE_KEY = v.VENUE_KEY
@@ -195,7 +202,4 @@ with col1:
 with col2:
     st.subheader("Weekend vs Weekday")
     weekend_counts = df.groupby("IS_WEEKEND").size().reset_index(name="count")
-    weekend_counts["label"] = weekend_counts["IS_WEEKEND"].apply(
-        lambda x: "Weekend" if x in (True, "True", "true", 1) else "Weekday"
-    )
-    st.bar_chart(weekend_counts.set_index("label")["count"])
+    st.bar_chart(weekend_counts.set_index("IS_WEEKEND")["count"])
