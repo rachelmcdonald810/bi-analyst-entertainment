@@ -13,14 +13,19 @@ st.set_page_config(page_title="Live Music Analytics", layout="wide")
 @st.cache_resource
 def get_connection():
     """Connect to Snowflake using Streamlit secrets."""
+    # Support both flat keys and [snowflake] section
+    if "snowflake" in st.secrets:
+        sf = st.secrets["snowflake"]
+    else:
+        sf = st.secrets
     return snowflake.connector.connect(
-        account=st.secrets["snowflake"]["account"],
-        user=st.secrets["snowflake"]["user"],
-        password=st.secrets["snowflake"]["password"],
-        warehouse=st.secrets["snowflake"]["warehouse"],
-        database=st.secrets["snowflake"]["database"],
-        schema=st.secrets["snowflake"]["schema"],
-        role=st.secrets["snowflake"]["role"],
+        account=sf["account"],
+        user=sf["user"],
+        password=sf["password"],
+        warehouse=sf["warehouse"],
+        database=sf["database"],
+        schema=sf["schema"],
+        role=sf["role"],
     )
 
 
