@@ -275,31 +275,72 @@ with tab2:
 
     st.divider()
 
-    # Streaming vs tour revenue comparison
-    st.subheader("Tour Revenue vs Estimated Streaming Revenue")
+    # The Conversion Case: streaming listeners → ticket buyers
+    st.subheader("The Ticketing Platform's Case: Where the Money Actually Is")
+    st.markdown("""
+    Streaming builds the audience. **Live events capture the revenue.** This chart is the pitch
+    a ticketing platform makes to artists, managers, and promoters: *your streaming listeners are
+    worth far more as ticket buyers than as streamers — and we're the platform that converts them.*
+    """)
+
     rev_compare = tour_rev.merge(spotify, on="ARTIST_NAME", how="inner")
     if not rev_compare.empty:
         rev_compare["est_annual_streaming"] = rev_compare["MONTHLY_LISTENERS"] * 50 * 12 * 0.004
+        rev_compare["revenue_multiplier"] = (rev_compare["GROSS_REVENUE"] / rev_compare["est_annual_streaming"].clip(lower=1)).round(0).astype(int)
+        rev_compare["conversion_rate"] = ((rev_compare["TICKETS_SOLD"] / rev_compare["MONTHLY_LISTENERS"]) * 100).round(1)
         rev_compare = rev_compare.sort_values("GROSS_REVENUE", ascending=True)
 
         fig = go.Figure()
-        fig.add_trace(go.Bar(name="Tour Gross", y=rev_compare["ARTIST_NAME"],
-                             x=rev_compare["GROSS_REVENUE"], orientation="h",
-                             marker_color=COLORS["coral"],
-                             text=rev_compare["GROSS_REVENUE"].apply(lambda x: f"${x/1e6:,.0f}M"),
-                             textposition="outside", textfont_size=14))
-        fig.add_trace(go.Bar(name="Est. Annual Streaming Rev", y=rev_compare["ARTIST_NAME"],
-                             x=rev_compare["est_annual_streaming"], orientation="h",
-                             marker_color=COLORS["gold"],
-                             text=rev_compare["est_annual_streaming"].apply(lambda x: f"${x/1e6:,.0f}M"),
-                             textposition="outside", textfont_size=14))
+        fig.add_trace(go.Bar(
+            name="Tour Gross (verified)", y=rev_compare["ARTIST_NAME"],
+            x=rev_compare["GROSS_REVENUE"], orientation="h",
+            marker_color=COLORS["coral"],
+            text=rev_compare["GROSS_REVENUE"].apply(lambda x: f"${x/1e6:,.0f}M"),
+            textposition="outside", textfont_size=14))
+        fig.add_trace(go.Bar(
+            name="Est. Annual Streaming Rev", y=rev_compare["ARTIST_NAME"],
+            x=rev_compare["est_annual_streaming"], orientation="h",
+            marker_color=COLORS["gold"],
+            text=rev_compare["est_annual_streaming"].apply(lambda x: f"${x/1e6:,.0f}M"),
+            textposition="outside", textfont_size=14))
         fig.update_layout(**PLOTLY_LAYOUT, barmode="group",
                           height=max(500, len(rev_compare) * 60),
                           legend=dict(orientation="h", yanchor="bottom", y=1.02, font=dict(size=14)),
                           xaxis_title="Revenue ($)", xaxis=dict(tickfont=dict(size=13)),
                           yaxis=dict(tickfont=dict(size=13)))
         st.plotly_chart(fig, use_container_width=True)
-        st.caption("Coral = verified tour gross. Gold = estimated annual Spotify streaming revenue (~50 streams/listener/month × $0.004 × 12 months).")
+        st.caption("Coral = verified tour gross (Pollstar/Billboard). Gold = estimated annual Spotify revenue (~50 streams/listener/month × $0.004 × 12 months).")
+
+        st.divider()
+
+        # Conversion metrics — the bargaining table
+        st.subheader("Listener-to-Buyer Conversion & Revenue Multiplier")
+        st.markdown("*How effectively does each artist convert streaming listeners into ticket buyers — and how much more is a ticket buyer worth than a streamer?*")
+
+        conv = rev_compare[["ARTIST_NAME", "MONTHLY_LISTENERS", "TICKETS_SOLD", "conversion_rate", "GROSS_REVENUE", "est_annual_streaming", "revenue_multiplier"]].copy()
+        conv = conv.sort_values("revenue_multiplier", ascending=False)
+
+        # KPI callouts for the top artist
+        top = conv.iloc[0]
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Highest Multiplier", f"{top['ARTIST_NAME']}", f"{top['revenue_multiplier']}x tour vs streaming")
+        avg_conv = conv["conversion_rate"].mean()
+        col2.metric("Avg Conversion Rate", f"{avg_conv:.1f}%", "listeners → ticket buyers")
+        total_tour = rev_compare["GROSS_REVENUE"].sum()
+        total_stream = rev_compare["est_annual_streaming"].sum()
+        col3.metric("Total Gap", f"${(total_tour - total_stream)/1e9:,.1f}B", "revenue left on table if artists only streamed")
+
+        # Conversion table
+        display_conv = conv.copy()
+        display_conv["MONTHLY_LISTENERS"] = display_conv["MONTHLY_LISTENERS"].apply(lambda x: f"{x:,.0f}")
+        display_conv["TICKETS_SOLD"] = display_conv["TICKETS_SOLD"].apply(lambda x: f"{x:,.0f}")
+        display_conv["conversion_rate"] = display_conv["conversion_rate"].apply(lambda x: f"{x:.1f}%")
+        display_conv["GROSS_REVENUE"] = display_conv["GROSS_REVENUE"].apply(lambda x: f"${x/1e6:,.0f}M")
+        display_conv["est_annual_streaming"] = display_conv["est_annual_streaming"].apply(lambda x: f"${x/1e6:,.0f}M")
+        display_conv["revenue_multiplier"] = display_conv["revenue_multiplier"].apply(lambda x: f"{x}x")
+        display_conv.columns = ["Artist", "Monthly Listeners", "Tickets Sold", "Conversion Rate", "Tour Gross", "Est. Streaming Rev", "Revenue Multiplier"]
+        st.dataframe(display_conv, use_container_width=True, hide_index=True)
+        st.caption("**Conversion Rate** = tickets sold ÷ monthly listeners. **Revenue Multiplier** = tour gross ÷ est. annual streaming rev. Higher multiplier = stronger case for live.")
 
     st.divider()
 
