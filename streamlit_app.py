@@ -9,6 +9,7 @@ import snowflake.connector
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+from cryptography.hazmat.primitives import serialization
 
 st.set_page_config(page_title="Live Music Analytics", layout="wide", page_icon="🎵")
 
@@ -114,8 +115,16 @@ LISTENER_TO_BUYER_RATE = 0.01
 @st.cache_resource
 def get_connection():
     sf = st.secrets["snowflake"] if "snowflake" in st.secrets else st.secrets
+    private_key = serialization.load_pem_private_key(
+        sf["private_key"].encode(), password=None
+    )
+    private_key_bytes = private_key.private_bytes(
+        serialization.Encoding.DER,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    )
     return snowflake.connector.connect(
-        account=sf["account"], user=sf["user"], password=sf["password"],
+        account=sf["account"], user=sf["user"], private_key=private_key_bytes,
         warehouse=sf["warehouse"], database=sf["database"],
         schema=sf["schema"], role=sf["role"],
     )
