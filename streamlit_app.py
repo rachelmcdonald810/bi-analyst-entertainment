@@ -194,6 +194,20 @@ try:
                SHOWS::INT as SHOWS, TOUR_YEAR, SOURCE
         FROM RAW_STAGING.STG_TOUR_REVENUE
     """)
+    sg_events = run_query("""
+        SELECT
+            TRIM(INITCAP(PERFORMER_NAME))       AS ARTIST_NAME,
+            TRIM(INITCAP(CITY))                 AS CITY,
+            TRIM(UPPER(STATE))                  AS STATE,
+            COUNT(*)                            AS SG_EVENT_COUNT,
+            AVG(AVERAGE_PRICE::FLOAT)           AS SG_AVG_PRICE,
+            AVG(EVENT_SCORE::FLOAT)             AS SG_AVG_SCORE,
+            AVG(EVENT_POPULARITY::FLOAT)        AS SG_AVG_POPULARITY,
+            SUM(COALESCE(LISTING_COUNT::INT,0)) AS TOTAL_LISTINGS
+        FROM RAW_STAGING.STG_SEATGEEK_EVENTS
+        WHERE PERFORMER_NAME IS NOT NULL AND CITY IS NOT NULL
+        GROUP BY 1, 2, 3
+    """)
 except Exception as e:
     st.error(f"Failed to load data: {e}")
     st.stop()
@@ -202,13 +216,68 @@ coords = events.apply(lambda r: geocode(r["CITY"], r["STATE"]), axis=1)
 events["lat"] = coords.apply(lambda x: x[0] if x else None)
 events["lon"] = coords.apply(lambda x: x[1] if x else None)
 
+# ── Pricing Signal ───────────────────────────────────────────────────────────
+
+def build_pricing_signal(sg_events_df, seatgeek_df):
+    merged = (
+        sg_events_df
+        .merge(seatgeek_df[["ARTIST_NAME", "SG_SCORE", "SG_POPULARITY"]],
+               left_on=sg_events_df["ARTIST_NAME"].str.strip().str.lower(),
+               right_on=seatgeek_df["ARTIST_NAME"].str.strip().str.lower(),
+               how="left")
+        .drop(columns=["key_0"], errors="ignore")
+    )
+    merged = merged.rename(columns={"ARTIST_NAME_x": "ARTIST_NAME"})
+    agg = (
+        merged.groupby("ARTIST_NAME")
+        .agg(
+            avg_sg_score=("SG_SCORE", "first"),
+            avg_listing_price=("SG_AVG_PRICE", "mean"),
+            total_sg_events=("SG_EVENT_COUNT", "sum"),
+        )
+        .reset_index()
+        .dropna(subset=["avg_sg_score", "avg_listing_price"])
+    )
+    if agg.empty:
+        return agg
+    try:
+        agg["score_decile"] = pd.qcut(
+            agg["avg_sg_score"], q=5,
+            labels=["1-Low", "2", "3", "4", "5-High"], duplicates="drop"
+        )
+    except ValueError:
+        agg["score_decile"] = "3"
+    peer_medians = (
+        agg.groupby("score_decile")["avg_listing_price"]
+        .median().reset_index()
+        .rename(columns={"avg_listing_price": "peer_median_price"})
+    )
+    agg = agg.merge(peer_medians, on="score_decile", how="left")
+    agg["price_vs_peers"] = (
+        (agg["avg_listing_price"] - agg["peer_median_price"])
+        / agg["peer_median_price"].clip(lower=1) * 100
+    ).round(1)
+
+    def pricing_label(row):
+        if row["avg_sg_score"] >= 0.75 and row["price_vs_peers"] < -15:
+            return "Underpriced"
+        elif row["avg_sg_score"] <= 0.55 and row["price_vs_peers"] > 15:
+            return "Overpriced"
+        return "Fair"
+
+    agg["PRICING_SIGNAL"] = agg.apply(pricing_label, axis=1)
+    return agg
+
+sg_price_signal = build_pricing_signal(sg_events, seatgeek)
+
 # ── Title ────────────────────────────────────────────────────────────────────
 
 st.markdown("# 🎵 Live Music Analytics")
 st.caption("Ticketmaster events + Spotify streaming + SeatGeek demand + verified tour revenue")
 
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
-    "📊 Overview", "💰 Pricing & Revenue", "🎤 Artist Insights", "📍 Venues & Geography", "📅 Time Trends"
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+    "📊 Overview", "💰 Pricing & Revenue", "🎤 Artist Insights",
+    "📍 Venues & Geography", "📅 Time Trends", "🎯 Recommendations"
 ])
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -603,6 +672,75 @@ with tab4:
             st.markdown("**Top Artists in Market**")
             st.dataframe(market_artists, use_container_width=True, hide_index=True)
 
+    st.divider()
+
+    # City-level demand vs supply
+    st.subheader("Streaming Demand vs Live Event Supply by City")
+    st.markdown("*Cities where Spotify listener demand is high but live event coverage is thin — highest-opportunity markets for booking.*")
+
+    sg_city_demand = (
+        sg_events
+        .merge(spotify.rename(columns={"ARTIST_NAME": "ARTIST_NAME"}),
+               left_on=sg_events["ARTIST_NAME"].str.strip().str.lower(),
+               right_on=spotify["ARTIST_NAME"].str.strip().str.lower(),
+               how="inner")
+        .drop(columns=["key_0"], errors="ignore")
+        .rename(columns={"ARTIST_NAME_x": "ARTIST_NAME"})
+        .groupby(["CITY", "STATE"])
+        .agg(
+            total_listeners=("MONTHLY_LISTENERS", "sum"),
+            sg_event_count=("SG_EVENT_COUNT", "sum"),
+            avg_sg_score=("SG_AVG_SCORE", "mean"),
+            unique_artists=("ARTIST_NAME", "nunique"),
+        )
+        .reset_index()
+    )
+    tm_city_counts = events.groupby(["CITY", "STATE"]).agg(tm_events=("EVENT_ID", "count")).reset_index()
+    city_gap = sg_city_demand.merge(tm_city_counts, on=["CITY", "STATE"], how="left")
+    city_gap["tm_events"] = city_gap["tm_events"].fillna(0).astype(int)
+    city_gap["demand_gap"] = (city_gap["total_listeners"] / city_gap["tm_events"].clip(lower=1)).round(0)
+    city_gap = city_gap[city_gap["total_listeners"] > 0].sort_values("demand_gap", ascending=False)
+
+    if not city_gap.empty:
+        city_gap_map = city_gap.copy()
+        city_gap_map[["lat", "lon"]] = city_gap_map.apply(
+            lambda r: pd.Series(geocode(r["CITY"], r["STATE"])), axis=1
+        )
+        city_gap_map = city_gap_map[city_gap_map["lat"].notna()]
+
+        if not city_gap_map.empty:
+            fig = px.scatter_geo(
+                city_gap_map,
+                lat="lat", lon="lon",
+                size="total_listeners",
+                color="tm_events",
+                color_continuous_scale=["#E8735A", "#D4A843", "#2E5C8A"],
+                hover_name="CITY",
+                hover_data={"STATE": True, "total_listeners": ":,.0f",
+                            "tm_events": True, "unique_artists": True,
+                            "lat": False, "lon": False},
+                scope="usa",
+                size_max=45,
+                labels={"total_listeners": "Spotify Listeners", "tm_events": "TM Events"},
+            )
+            fig.update_layout(
+                geo=dict(bgcolor="rgba(0,0,0,0)", landcolor="#2a2a45",
+                         subunitcolor="#555577", showsubunits=True,
+                         showcoastlines=True, coastlinecolor="#888888"),
+                paper_bgcolor="rgba(0,0,0,0)",
+                coloraxis_colorbar=dict(title="TM Events"),
+                margin=dict(l=0, r=0, t=0, b=0), height=450,
+            )
+            st.plotly_chart(fig, use_container_width=True)
+            st.caption("Dot size = total Spotify listener demand. Color = TM event count — warm (red/gold) = underserved markets.")
+
+        st.subheader("Top 10 Underserved Markets")
+        top_gaps = city_gap.head(10)[["CITY", "STATE", "total_listeners", "tm_events", "unique_artists", "avg_sg_score"]].copy()
+        top_gaps["total_listeners"] = top_gaps["total_listeners"].apply(lambda x: f"{x:,.0f}")
+        top_gaps["avg_sg_score"] = top_gaps["avg_sg_score"].apply(lambda x: f"{x:.2f}" if pd.notna(x) else "—")
+        top_gaps.columns = ["City", "State", "Spotify Listeners", "TM Events", "Artists Active on SG", "Avg SG Score"]
+        st.dataframe(top_gaps, use_container_width=True, hide_index=True)
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # TAB 5: TIME TRENDS
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -649,3 +787,183 @@ with tab5:
                      color_continuous_scale=COLORS["ombre_warm"])
         fig.update_layout(**PLOTLY_LAYOUT, showlegend=False, coloraxis_showscale=False, height=350, xaxis_title="")
         st.plotly_chart(fig, use_container_width=True)
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TAB 6: RECOMMENDATIONS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+with tab6:
+    st.markdown("### What should you do next?")
+    st.markdown("Three decision-ready outputs built from streaming, ticketing, and demand data.")
+
+    st.divider()
+
+    # ── Section A: Untapped Markets ──────────────────────────────────────────
+    st.subheader("1. Untapped Markets — High Demand, No Events")
+    st.markdown(
+        "Artists with large streaming audiences who are absent from major markets. "
+        "These are the highest-confidence cold pitches for a booking agent."
+    )
+
+    min_listeners = st.number_input(
+        "Min monthly listeners", value=500_000, step=100_000, format="%d", key="untapped_filter"
+    )
+
+    artist_sg_cities = (
+        sg_events.groupby(sg_events["ARTIST_NAME"].str.strip().str.lower())["CITY"]
+        .apply(lambda x: set(x.str.strip().str.lower()))
+        .reset_index()
+    )
+    artist_sg_cities.columns = ["artist_key", "covered_cities"]
+
+    sp_copy = spotify.copy()
+    sp_copy["artist_key"] = sp_copy["ARTIST_NAME"].str.strip().str.lower()
+    sg_copy = seatgeek[["ARTIST_NAME", "SG_SCORE"]].copy()
+    sg_copy["artist_key"] = sg_copy["ARTIST_NAME"].str.strip().str.lower()
+
+    untapped_base = (
+        sp_copy[sp_copy["MONTHLY_LISTENERS"] >= min_listeners]
+        .merge(artist_sg_cities, on="artist_key", how="left")
+        .merge(sg_copy[["artist_key", "SG_SCORE"]], on="artist_key", how="left")
+    )
+    untapped_base["covered_cities"] = untapped_base["covered_cities"].apply(
+        lambda x: x if isinstance(x, set) else set()
+    )
+
+    all_major_cities = list(CITY_COORDS.keys())
+    rows_ut = []
+    for _, row in untapped_base.iterrows():
+        for (city, state) in all_major_cities:
+            if city.strip().lower() not in row["covered_cities"]:
+                rows_ut.append({
+                    "Artist": row["ARTIST_NAME"],
+                    "Monthly Listeners": row["MONTHLY_LISTENERS"],
+                    "SG Score": row["SG_SCORE"],
+                    "City": city,
+                    "State": state,
+                })
+    if rows_ut:
+        top_untapped = (
+            pd.DataFrame(rows_ut)
+            .sort_values(["Monthly Listeners", "SG Score"], ascending=False)
+            .drop_duplicates(subset=["Artist", "City"])
+            .head(20)
+        )
+        top_untapped["Label"] = top_untapped["Artist"] + " → " + top_untapped["City"] + ", " + top_untapped["State"]
+        fig = px.bar(
+            top_untapped.sort_values("Monthly Listeners"),
+            x="Monthly Listeners", y="Label", orientation="h",
+            color="SG Score", color_continuous_scale=COLORS["ombre"],
+        )
+        fig.update_layout(**PLOTLY_LAYOUT, height=max(400, len(top_untapped) * 28),
+                          showlegend=False, coloraxis_colorbar=dict(title="SG Score"),
+                          xaxis_title="Spotify Monthly Listeners")
+        fig.update_traces(texttemplate="%{x:,.0f}", textposition="outside", textfont_size=9)
+        st.plotly_chart(fig, use_container_width=True)
+        st.caption("Each bar = one artist in one city they haven't played. Bar length = audience size. Color = how aggressively their tickets sell.")
+    else:
+        st.info("No untapped markets found at this listener threshold.")
+
+    st.divider()
+
+    # ── Section B: Underpriced Shows ─────────────────────────────────────────
+    st.subheader("2. Underpriced Shows — High Demand, Low Ticket Price")
+    st.markdown(
+        "Shows where SeatGeek demand score is high but listing prices are significantly "
+        "below what comparable artists charge. These are leaving revenue on the table."
+    )
+
+    if not sg_price_signal.empty:
+        col1, col2 = st.columns([2, 1])
+
+        with col1:
+            fig = px.scatter(
+                sg_price_signal,
+                x="avg_listing_price",
+                y="avg_sg_score",
+                color="price_vs_peers",
+                color_continuous_scale="RdBu_r",
+                range_color=[-50, 50],
+                text="ARTIST_NAME",
+                hover_data=["peer_median_price", "score_decile", "PRICING_SIGNAL"],
+                labels={
+                    "avg_listing_price": "Avg Listing Price ($)",
+                    "avg_sg_score": "SeatGeek Score",
+                    "price_vs_peers": "% vs Peer Median",
+                },
+            )
+            fig.update_traces(textposition="top center", textfont_size=9, marker=dict(size=10))
+            fig.update_layout(**PLOTLY_LAYOUT, height=450,
+                              coloraxis_colorbar=dict(title="% vs Peers"))
+            st.plotly_chart(fig, use_container_width=True)
+            st.caption("Red = priced below peers for their demand tier. Blue = priced above. Artists in the top-left are most underpriced.")
+
+        with col2:
+            underpriced_df = sg_price_signal[sg_price_signal["PRICING_SIGNAL"] == "Underpriced"].sort_values("avg_sg_score", ascending=False)
+            overpriced_df = sg_price_signal[sg_price_signal["PRICING_SIGNAL"] == "Overpriced"]
+            st.metric("Underpriced Shows", len(underpriced_df), "raising price = more revenue")
+            st.metric("Overpriced Shows", len(overpriced_df), "at risk of poor sales")
+            st.metric("Fairly Priced", len(sg_price_signal) - len(underpriced_df) - len(overpriced_df))
+
+        if not underpriced_df.empty:
+            display_up = underpriced_df[["ARTIST_NAME", "avg_sg_score", "avg_listing_price", "peer_median_price", "price_vs_peers"]].copy()
+            display_up["avg_sg_score"] = display_up["avg_sg_score"].apply(lambda x: f"{x:.2f}")
+            display_up["avg_listing_price"] = display_up["avg_listing_price"].apply(lambda x: f"${x:,.0f}")
+            display_up["peer_median_price"] = display_up["peer_median_price"].apply(lambda x: f"${x:,.0f}")
+            display_up["price_vs_peers"] = display_up["price_vs_peers"].apply(lambda x: f"{x:.0f}%")
+            display_up.columns = ["Artist", "SG Score", "Avg Price", "Peer Median", "% vs Peers"]
+            st.dataframe(display_up, use_container_width=True, hide_index=True)
+    else:
+        st.info("Not enough pricing data to compute signals.")
+
+    st.divider()
+
+    # ── Section C: Booking Opportunities ─────────────────────────────────────
+    st.subheader("3. Booking Opportunities — High Streaming, Zero Live Presence")
+    st.markdown(
+        "Artists with significant Spotify audiences who have no upcoming events on "
+        "Ticketmaster or SeatGeek. These represent the clearest first-booking pitches."
+    )
+
+    event_counts_all = events.groupby("ARTIST_NAME").agg(tm_events=("EVENT_ID", "count")).reset_index()
+    booking_opps = (
+        spotify
+        .merge(seatgeek[["ARTIST_NAME", "SG_SCORE", "SG_POPULARITY", "SG_UPCOMING_EVENTS"]],
+               left_on=spotify["ARTIST_NAME"].str.strip().str.lower(),
+               right_on=seatgeek["ARTIST_NAME"].str.strip().str.lower(),
+               how="left")
+        .drop(columns=["key_0"], errors="ignore")
+        .rename(columns={"ARTIST_NAME_x": "ARTIST_NAME"})
+        .merge(event_counts_all,
+               left_on="ARTIST_NAME", right_on="ARTIST_NAME", how="left")
+    )
+    booking_opps["tm_events"] = booking_opps["tm_events"].fillna(0).astype(int)
+    booking_opps["SG_UPCOMING_EVENTS"] = booking_opps["SG_UPCOMING_EVENTS"].fillna(0).astype(int)
+
+    zero_presence = booking_opps[
+        (booking_opps["tm_events"] == 0) &
+        (booking_opps["SG_UPCOMING_EVENTS"] == 0) &
+        (booking_opps["MONTHLY_LISTENERS"].notna())
+    ].sort_values("MONTHLY_LISTENERS", ascending=False)
+
+    if not zero_presence.empty:
+        total_audience = zero_presence["MONTHLY_LISTENERS"].sum()
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Artists with Zero Presence", f"{len(zero_presence):,}")
+        col2.metric("Total Untapped Audience", f"{total_audience/1e6:.1f}M listeners")
+        col3.metric("Avg Listeners per Artist", f"{zero_presence['MONTHLY_LISTENERS'].mean():,.0f}")
+
+        fig = px.bar(
+            zero_presence.head(20).sort_values("MONTHLY_LISTENERS"),
+            x="MONTHLY_LISTENERS", y="ARTIST_NAME", orientation="h",
+            color="SG_SCORE", color_continuous_scale=COLORS["ombre_warm"],
+            labels={"MONTHLY_LISTENERS": "Monthly Listeners", "SG_SCORE": "SG Score"},
+        )
+        fig.update_layout(**PLOTLY_LAYOUT, height=max(400, len(zero_presence.head(20)) * 28),
+                          showlegend=False, coloraxis_colorbar=dict(title="SG Score"),
+                          xaxis_title="Spotify Monthly Listeners")
+        fig.update_traces(texttemplate="%{x:,.0f}", textposition="outside", textfont_size=9)
+        st.plotly_chart(fig, use_container_width=True)
+        st.caption("These artists have no events on Ticketmaster or SeatGeek. Color = SeatGeek demand score where available.")
+    else:
+        st.info("All artists with Spotify data have at least one upcoming event.")
