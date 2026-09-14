@@ -15,3 +15,9 @@ sources:
         description: Raw event data from SeatGeek API
       - name: raw_tour_revenue
         description: Verified tour revenue data from Pollstar, Billboard, Touring Data
+      - name: raw_spotify_releases
+        description: Latest release title/type/year scraped from Spotify artist pages via Firecrawl
+      - name: raw_venue_capacity
+        description: Venue capacity data fetched from SeatGeek API
+      - name: raw_tour_calendar
+        description: Announced tour dates scraped from Bandsintown via Firecrawl (proxy — excludes private bookings)

@@ -54,3 +54,79 @@ models:
         description: SeatGeek event identifier
         tests:
           - not_null
+
+  - name: stg_spotify_releases
+    description: Latest release per artist scraped from Spotify. Release date is Jan 1 of release year (Spotify exposes year only).
+    columns:
+      - name: artist_name
+        description: Artist name
+        tests:
+          - not_null
+      - name: latest_release_title
+        description: Title of most recent release
+        tests:
+          - not_null
+      - name: release_type
+        description: Album, Single, or EP
+      - name: is_recent_release
+        description: True if release_date is within last 90 days
+
+  - name: stg_spotify_artists_history
+    description: Full time series of Spotify monthly listener counts. One row per artist per pipeline run. Used for growth rate and career arc charts.
+    columns:
+      - name: artist_name
+        description: Artist name
+        tests:
+          - not_null
+      - name: monthly_listeners
+        description: Monthly listener count at snapshot time
+        tests:
+          - not_null
+      - name: snapshot_date
+        description: Date of the pipeline run that produced this row
+
+  - name: stg_seatgeek_velocity
+    description: Day-over-day changes in SeatGeek listing_count and event_score. listing_velocity > 0 = demand building. Proxy for primary ticket sales velocity pending Ticketmaster partner API access.
+    columns:
+      - name: event_id
+        description: SeatGeek event identifier
+        tests:
+          - not_null
+      - name: listing_velocity
+        description: Change in listing_count since previous snapshot. NULL for first snapshot.
+      - name: score_velocity
+        description: Change in event_score since previous snapshot. NULL for first snapshot.
+
+  - name: stg_venue_capacity
+    description: Venue capacity and tier from SeatGeek API. club <1000, theater 1000-4999, amphitheater 5000-19999, arena 20000+.
+    columns:
+      - name: venue_name
+        description: Venue name
+        tests:
+          - not_null
+      - name: capacity
+        description: Maximum venue capacity
+        tests:
+          - not_null
+      - name: venue_tier
+        description: club, theater, amphitheater, or arena
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['club', 'theater', 'amphitheater', 'arena']
+
+  - name: stg_tour_calendar
+    description: Announced upcoming tour dates from Bandsintown. Proxy only — excludes unannounced and private bookings.
+    columns:
+      - name: artist_name
+        description: Artist name
+        tests:
+          - not_null
+      - name: event_date
+        description: Date of announced show
+        tests:
+          - not_null
+      - name: city
+        description: City of the show
+      - name: state
+        description: State abbreviation
