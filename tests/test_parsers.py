@@ -1,6 +1,5 @@
 """Unit tests for pipeline parsing functions."""
 import pytest
-from datetime import date
 
 
 # ── Release parsing ───────────────────────────────────────────────────────────
