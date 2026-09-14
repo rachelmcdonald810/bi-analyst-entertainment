@@ -1,5 +1,5 @@
 # Role-Based Recommendations, Artist Career Arc & Financial Modeling — Design Spec
-**Date:** 2026-09-13 (updated from 2026-09-11)
+**Date:** 2026-09-13 (updated twice from 2026-09-11)
 **Project:** Live Music Analytics Pipeline
 **Status:** Approved for implementation
 
@@ -13,7 +13,7 @@ This spec covers three major additions to the Streamlit dashboard:
 2. **Artist Career Arc** — A new section inside the Artist Insights tab that tracks and compares an artist's growth trajectory over time.
 3. **Financial Modeling Layer** — Embedded inside the Artist Manager tour builder (Step 5) and surfaced as a portfolio-level summary in the Label Executive view. Covers forward revenue projection, target gap analysis, comp analysis, venue/touring company splits, itemized cost breakdown, and ROI.
 
-All additions depend on two new data sources: historical Spotify listener accumulation and venue capacity enrichment.
+All additions depend on four new data sources: historical Spotify listener accumulation, venue capacity enrichment, release schedule scraping, and two velocity/calendar approximation pipelines (resale demand velocity via SeatGeek append, announced tour calendar via Bandsintown scrape) that are designed to be replaced or augmented by Ticketmaster partner API access when available.
 
 ---
 
@@ -58,7 +58,49 @@ Requires at least 30 days of data to produce a signal. Before that, growth rate 
 
 Tier is computed per artist at dashboard load time and used across all three role views.
 
-### 1.3 Venue Capacity Enrichment
+### 1.3 Resale Demand Velocity (SeatGeek Append)
+**Script:** `src/extract_seatgeek.py` (modify existing — stop overwriting, append instead)
+**Destination:** `RAW_STAGING.STG_SEATGEEK_EVENTS` (append mode, same pattern as listener accumulation)
+
+Each daily pipeline run appends a new snapshot of `LISTING_COUNT` and `EVENT_SCORE` per event. This creates a time series from which day-over-day velocity is computed:
+
+```
+listing_velocity     = listing_count_today − listing_count_yesterday
+score_velocity       = event_score_today − event_score_yesterday
+```
+
+**Price gap ratio** (computed in dashboard):
+```
+price_gap_ratio = sg_avg_resale_price / tm_avg_ticket_price
+```
+- Ratio >1.5 = show is significantly underpriced on primary market
+- Ratio ~1.0 = primary pricing is efficient
+- Ratio <0.8 = weak secondary demand, potential oversupply
+
+**UI labeling:** All velocity metrics are labeled "Resale demand velocity (SeatGeek listings — proxy for primary sales velocity pending Ticketmaster partner API access)." The primary sales velocity column shows "Pending partner access" until TM API is connected. When TM partner data arrives, it populates a new column alongside SeatGeek — both signals are preserved.
+
+### 1.4 Announced Tour Calendar (Bandsintown)
+**Script:** `src/scrape_tour_calendar.py`
+**Destination:** `RAW_STAGING.STG_TOUR_CALENDAR`
+
+| Column | Type | Description |
+|---|---|---|
+| ARTIST_NAME | VARCHAR | Matched to STG_SPOTIFY_ARTISTS |
+| EVENT_DATE | DATE | Announced show date |
+| VENUE_NAME | VARCHAR | |
+| CITY | VARCHAR | |
+| STATE | VARCHAR | |
+| TICKET_URL | VARCHAR | Link to buy |
+| SOURCE | VARCHAR | 'bandsintown' |
+| LOADED_AT | TIMESTAMP | |
+
+Scraped via Firecrawl from each artist's Bandsintown page. Runs daily. Overwrites per artist (we want current announced dates, not history).
+
+**UI labeling:** Calendar view is labeled "Announced tour dates (Bandsintown — does not include unannounced or private bookings)."
+
+**Integration with tour builder:** In the Artist Manager view, Step 3 (Generated Tour Route) checks `STG_TOUR_CALENDAR` first — if an artist already has announced dates, those cities are pre-populated on the route map as locked stops (shown in a different color). The builder then fills in recommended additional cities around the confirmed dates.
+
+### 1.5 Venue Capacity Enrichment
 **Script:** `src/scrape_venue_capacity.py`
 **Destination:** `RAW_STAGING.STG_VENUE_CAPACITY`
 
@@ -150,12 +192,29 @@ Outputs:
   - Sellthrough rates by tier: Proven=90%, Emerging=70%, Experimental=50%
 - Day-of-week recommendation: Proven → Fri/Sat, Emerging → Thu/Fri, Experimental → Tue–Thu
 
-**Panel 3 — Risk Flags**
+**Panel 3 — Ticket Velocity Dashboard**
+
+Two columns per show/artist:
+
+| Signal | Source | Label in UI |
+|---|---|---|
+| Primary sales velocity | TM partner API | "Pending partner access" until connected |
+| Resale demand velocity | SeatGeek listing_count day-over-day | "Resale velocity (SeatGeek proxy)" |
+| Price gap ratio | sg_avg_price / tm_avg_price | "Primary vs. resale price gap" |
+
+Price gap ratio displayed as a color-coded badge:
+- 🔴 >1.5x — significantly underpriced, raise primary price
+- 🟡 1.2–1.5x — moderate gap, monitor
+- 🟢 ~1.0x — efficient pricing
+- ⚪ <0.8x — weak secondary demand, risk of unsold inventory
+
+**Panel 4 — Risk Flags**
 
 Artists where:
 - Listener growth is negative (declining MoM)
 - SG score dropped (requires historical SG data — flag as "score data unavailable" if not yet accumulated)
 - High listeners but very low SG score (streaming audience not converting to ticket buyers)
+- Price gap ratio <0.8 (secondary market bearish on the show)
 
 Displayed as a warning table with risk type labeled per artist.
 
@@ -196,7 +255,7 @@ Algorithm:
 7. Assign ticket price range per city: venue capacity tier × peer benchmarking × pricing tier preference
 8. Flag day-of-week per city based on artist tier
 
-Output as an interactive table + map. Map uses existing `scatter_geo` pattern with route lines connecting cities in order.
+Output as an interactive table + map. Map uses existing `scatter_geo` pattern with route lines connecting cities in order. Cities with already-announced dates (from `STG_TOUR_CALENDAR`) appear as locked stops in gold; recommended additions appear in coral.
 
 **Market Expansion Flags** (inline with route):
 - Cities outside artist's current top-5 states that appear on the route get a 🌱 flag
@@ -415,7 +474,15 @@ Break-even Shows             = total_fixed_costs / avg_net_per_show
 Gap to Target                = revenue_target − net_tour_profit
 Peer Benchmark Delta         = (artist_metric − peer_avg) / peer_avg × 100
 Streaming Context Signal     = listener_30d_growth_rate (informs sellthrough tooltip only)
+
+-- Velocity signals
+Listing Velocity             = listing_count_today − listing_count_yesterday  [SeatGeek proxy]
+Score Velocity               = event_score_today − event_score_yesterday       [SeatGeek proxy]
+Price Gap Ratio              = sg_avg_resale_price / tm_avg_ticket_price
+Primary Sales Velocity       = [Pending TM partner API — column reserved]
 ```
+
+**Data source transparency rule:** Every metric in the dashboard that uses a proxy instead of authoritative data must display a `ⓘ` info icon with a tooltip explaining the source and its limitations. This is non-negotiable — the dashboard is used for financial decisions.
 
 ---
 
@@ -423,19 +490,30 @@ Streaming Context Signal     = listener_30d_growth_rate (informs sellthrough too
 
 | File | Change |
 |---|---|
-| `streamlit_app.py` | Role selector + 4 role views + financial model + career arc |
+| `streamlit_app.py` | Role selector + 4 role views + financial model + career arc + velocity signals |
 | `src/scrape_spotify_releases.py` | New scraper |
 | `src/scrape_venue_capacity.py` | New scraper |
+| `src/scrape_tour_calendar.py` | New scraper (Bandsintown) |
 | `src/extract_spotify.py` | Change MERGE to INSERT (append mode) |
-| `.github/workflows/` | Add two new scrapers to daily pipeline |
-| `dbt_project/models/staging/` | New staging models for releases + venue capacity |
+| `src/extract_seatgeek.py` | Change MERGE to INSERT (append mode for velocity tracking) |
+| `.github/workflows/` | Add three new scrapers to daily pipeline |
+| `dbt_project/models/staging/` | New staging models for releases, venue capacity, tour calendar |
 
 ---
 
-## 7. What We Are Not Building
+## 7. Future State — When TM Partner API Access Is Granted
 
-- Real-time ticket sales velocity (no API access to live TM sales data)
+1. Add `src/extract_tm_sales.py` pulling primary sales velocity per event
+2. Load into new `RAW_STAGING.STG_TM_SALES_VELOCITY` table
+3. In dashboard, populate the "Primary Sales Velocity" column currently showing "Pending partner access"
+4. Price gap ratio automatically gains a more accurate denominator (real avg ticket vs. listed price)
+5. No other architecture changes required — the column was always reserved
+
+---
+
+## 8. What We Are Not Building
+
 - Chartmetric integration (external paid tool, out of scope)
-- Actual tour booking or calendar integration
 - Label royalty accounting or recording advance modeling
 - Tax or legal cost modeling
+- Actual booking system integration (agency or promoter internal systems)
