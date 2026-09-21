@@ -8,6 +8,7 @@ import snowflake.connector
 from dotenv import load_dotenv
 from firecrawl import V1FirecrawlApp as FirecrawlApp
 from datetime import datetime, timezone
+from cryptography.hazmat.primitives import serialization
 
 load_dotenv()
 
@@ -61,10 +62,18 @@ def get_artist_urls(conn) -> list[tuple[str, str]]:
 
 
 def get_snowflake_connection():
+    key_path = os.getenv("SNOWFLAKE_PRIVATE_KEY_PATH", "/Users/rachelmcdonald/rsa_key.p8")
+    with open(key_path, "rb") as f:
+        private_key = serialization.load_pem_private_key(f.read(), password=None)
+    private_key_bytes = private_key.private_bytes(
+        serialization.Encoding.DER,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    )
     return snowflake.connector.connect(
         account=os.getenv("SNOWFLAKE_ACCOUNT"),
         user=os.getenv("SNOWFLAKE_USER"),
-        password=os.getenv("SNOWFLAKE_PASSWORD"),
+        private_key=private_key_bytes,
         warehouse=os.getenv("SNOWFLAKE_WAREHOUSE"),
         database=os.getenv("SNOWFLAKE_DATABASE"),
         schema=os.getenv("SNOWFLAKE_SCHEMA"),
