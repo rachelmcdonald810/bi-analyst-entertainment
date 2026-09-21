@@ -20,20 +20,22 @@ def parse_release(markdown: str) -> dict | None:
     """
     Extract the latest release title, type, and year from Spotify page markdown.
 
-    Spotify pages render releases as: **Title** · Album|Single|EP · YYYY
-    Returns dict with keys: title, release_type, release_year
+    Spotify pages render releases as: [Title](url)\n\nYYYY • Album|Single|EP
+    Returns dict with keys: title, release_type, release_year (most recent by year).
     Returns None if no match found.
     """
     if not markdown:
         return None
-    pattern = r"\*\*([^*]+)\*\*\s*·\s*(Album|Single|EP|Compilation)\s*·\s*(\d{4})"
-    match = re.search(pattern, markdown)
-    if not match:
+    pattern = r"\[([^\]]+)\]\([^)]+\)\s*\n\s*\n\s*(\d{4})\s*•\s*(Album|Single|EP|Compilation)"
+    matches = re.findall(pattern, markdown)
+    if not matches:
         return None
+    # Pick the entry with the highest year
+    latest = max(matches, key=lambda m: int(m[1]))
     return {
-        "title": match.group(1).strip(),
-        "release_type": match.group(2).strip(),
-        "release_year": match.group(3).strip(),
+        "title": latest[0].strip(),
+        "release_year": latest[1].strip(),
+        "release_type": latest[2].strip(),
     }
 
 
@@ -62,9 +64,14 @@ def get_artist_urls(conn) -> list[tuple[str, str]]:
 
 
 def get_snowflake_connection():
-    key_path = os.getenv("SNOWFLAKE_PRIVATE_KEY_PATH", "/Users/rachelmcdonald/rsa_key.p8")
-    with open(key_path, "rb") as f:
-        private_key = serialization.load_pem_private_key(f.read(), password=None)
+    key_content = os.getenv("SNOWFLAKE_PRIVATE_KEY")
+    if key_content:
+        pem = key_content.encode()
+    else:
+        key_path = os.getenv("SNOWFLAKE_PRIVATE_KEY_PATH", "/Users/rachelmcdonald/rsa_key.p8")
+        with open(key_path, "rb") as f:
+            pem = f.read()
+    private_key = serialization.load_pem_private_key(pem, password=None)
     private_key_bytes = private_key.private_bytes(
         serialization.Encoding.DER,
         serialization.PrivateFormat.PKCS8,

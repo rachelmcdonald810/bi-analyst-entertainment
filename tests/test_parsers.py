@@ -7,10 +7,13 @@ import pytest
 def test_parse_release_date_album():
     from src.scrape_spotify_releases import parse_release
     markdown = """
-## Discography
-### Popular releases
-**Short n' Sweet** · Album · 2024
-**Emails I Can't Send** · Album · 2022
+[Short n' Sweet](https://open.spotify.com/album/abc)
+
+2024 • Album
+
+[Emails I Can't Send](https://open.spotify.com/album/def)
+
+2022 • Album
 """
     result = parse_release(markdown)
     assert result["title"] == "Short n' Sweet"
@@ -21,7 +24,9 @@ def test_parse_release_date_album():
 def test_parse_release_date_single():
     from src.scrape_spotify_releases import parse_release
     markdown = """
-**Please Please Please** · Single · 2024
+[Please Please Please](https://open.spotify.com/album/xyz)
+
+2024 • Single
 """
     result = parse_release(markdown)
     assert result["title"] == "Please Please Please"
@@ -74,28 +79,52 @@ def test_venue_tier_boundary_amphitheater_low():
 
 # ── Tour calendar parsing ─────────────────────────────────────────────────────
 
-def test_parse_bandsintown_events_basic():
-    from src.scrape_tour_calendar import parse_events
-    markdown = """
-## Upcoming Events
-
-**Sep 20, 2026** — Madison Square Garden, New York, NY [Get Tickets](https://bandsintown.com/t/123)
-**Oct 5, 2026** — Crypto.com Arena, Los Angeles, CA [Get Tickets](https://bandsintown.com/t/456)
-"""
-    events = parse_events(markdown, "Test Artist")
+def test_parse_tm_events_basic():
+    from src.scrape_tour_calendar import parse_tm_events
+    data = {
+        "_embedded": {
+            "events": [
+                {
+                    "name": "Zach Bryan - With Heaven On Tour",
+                    "dates": {"start": {"localDate": "2026-10-03"}},
+                    "_embedded": {
+                        "venues": [{
+                            "name": "Gillette Stadium",
+                            "city": {"name": "Foxborough"},
+                            "state": {"stateCode": "MA"},
+                        }]
+                    },
+                    "url": "https://www.ticketmaster.com/event/abc",
+                },
+                {
+                    "name": "Zach Bryan - With Heaven On Tour",
+                    "dates": {"start": {"localDate": "2026-10-10"}},
+                    "_embedded": {
+                        "venues": [{
+                            "name": "Jordan Hare Stadium",
+                            "city": {"name": "Auburn"},
+                            "state": {"stateCode": "AL"},
+                        }]
+                    },
+                    "url": "https://www.ticketmaster.com/event/def",
+                },
+            ]
+        }
+    }
+    events = parse_tm_events(data, "Zach Bryan")
     assert len(events) == 2
-    assert events[0]["city"] == "New York"
-    assert events[0]["state"] == "NY"
-    assert events[0]["venue_name"] == "Madison Square Garden"
+    assert events[0]["city"] == "Foxborough"
+    assert events[0]["state"] == "MA"
+    assert events[0]["venue_name"] == "Gillette Stadium"
 
 
-def test_parse_bandsintown_events_empty():
-    from src.scrape_tour_calendar import parse_events
-    events = parse_events("No upcoming events.", "Test Artist")
+def test_parse_tm_events_empty():
+    from src.scrape_tour_calendar import parse_tm_events
+    events = parse_tm_events({}, "Test Artist")
     assert events == []
 
 
-def test_parse_bandsintown_events_returns_list():
-    from src.scrape_tour_calendar import parse_events
-    result = parse_events("", "Test Artist")
+def test_parse_tm_events_returns_list():
+    from src.scrape_tour_calendar import parse_tm_events
+    result = parse_tm_events({}, "Test Artist")
     assert isinstance(result, list)

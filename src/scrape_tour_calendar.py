@@ -1,86 +1,59 @@
 """
-Scrape announced tour dates from Bandsintown artist pages via Firecrawl.
+Fetch upcoming tour dates from Ticketmaster Discovery API.
 Loads into RAW_TOUR_CALENDAR (overwrites per artist on each run).
 """
 import os
-import re
+import requests
 import snowflake.connector
 from dotenv import load_dotenv
-from firecrawl import V1FirecrawlApp as FirecrawlApp
 from datetime import datetime, timezone
 from cryptography.hazmat.primitives import serialization
 
 load_dotenv()
 
-FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY")
-app = FirecrawlApp(api_key=FIRECRAWL_API_KEY)
-
-# Bandsintown URL pattern: https://www.bandsintown.com/a/artist-name
-BANDSINTOWN_BASE = "https://www.bandsintown.com/a"
-
-# Month abbreviation → number
-MONTH_MAP = {
-    "Jan": "01", "Feb": "02", "Mar": "03", "Apr": "04",
-    "May": "05", "Jun": "06", "Jul": "07", "Aug": "08",
-    "Sep": "09", "Oct": "10", "Nov": "11", "Dec": "12",
-}
+TM_API_KEY = os.getenv("TICKETMASTER_API_KEY")
+TM_BASE_URL = "https://app.ticketmaster.com/discovery/v2/events.json"
 
 
-def parse_events(markdown: str, artist_name: str) -> list[dict]:
+def parse_tm_events(data: dict, artist_name: str) -> list[dict]:
     """
-    Parse Bandsintown page markdown into a list of event dicts.
-
-    Bandsintown renders events as:
-    **Mon Month DD, YYYY** — Venue Name, City, ST [Get Tickets](url)
+    Parse Ticketmaster Discovery API response into event dicts.
 
     Returns list of dicts with keys:
     artist_name, event_date, venue_name, city, state, ticket_url
     """
-    if not markdown:
-        return []
-
-    # Pattern: Month DD, YYYY — Venue, City, ST
-    pattern = (
-        r"\*\*(?:\w+\s+)?(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)"
-        r"\s+(\d{1,2}),\s+(\d{4})\*\*"
-        r"\s*[—-]\s*"
-        r"([^,\n]+),\s*([^,\n]+),\s*([A-Z]{2})"
-        r".*?\[Get Tickets\]\((https?://[^\)]+)\)"
-    )
-
+    events_raw = data.get("_embedded", {}).get("events", [])
     events = []
-    for match in re.finditer(pattern, markdown):
-        month_abbr, day, year, venue, city, state, ticket_url = match.groups()
-        month = MONTH_MAP.get(month_abbr, "01")
-        day_padded = day.zfill(2)
-        event_date = f"{year}-{month}-{day_padded}"
+    for e in events_raw:
+        event_date = e.get("dates", {}).get("start", {}).get("localDate")
+        if not event_date:
+            continue
+        venues = e.get("_embedded", {}).get("venues", [])
+        venue = venues[0] if venues else {}
         events.append({
             "artist_name": artist_name,
             "event_date": event_date,
-            "venue_name": venue.strip(),
-            "city": city.strip(),
-            "state": state.strip(),
-            "ticket_url": ticket_url.strip(),
+            "venue_name": venue.get("name", ""),
+            "city": venue.get("city", {}).get("name", ""),
+            "state": venue.get("state", {}).get("stateCode", ""),
+            "ticket_url": e.get("url", ""),
         })
     return events
 
 
-def bandsintown_url(artist_name: str) -> str:
-    """Build Bandsintown URL for an artist name."""
-    slug = artist_name.lower().replace(" ", "-").replace("&", "and")
-    slug = re.sub(r"[^a-z0-9\-]", "", slug)
-    return f"{BANDSINTOWN_BASE}/{slug}"
-
-
-def scrape_artist_events(artist_name: str) -> list[dict]:
-    """Scrape Bandsintown for an artist's upcoming events."""
-    url = bandsintown_url(artist_name)
+def fetch_artist_events(artist_name: str) -> list[dict]:
+    """Fetch upcoming events from Ticketmaster Discovery API."""
     try:
-        result = app.scrape_url(url, formats=["markdown"])
-        markdown = result.markdown if result else ""
-        return parse_events(markdown or "", artist_name)
+        r = requests.get(TM_BASE_URL, params={
+            "apikey": TM_API_KEY,
+            "keyword": artist_name,
+            "classificationName": "music",
+            "size": 50,
+        })
+        r.raise_for_status()
+        return parse_tm_events(r.json(), artist_name)
     except Exception as e:
-        print(f"  Firecrawl error for {artist_name}: {e}")
+        print(f"  TM API error for {artist_name}: {e}")
         return []
 
 
@@ -99,9 +72,14 @@ def get_artist_names(conn) -> list[str]:
 
 
 def get_snowflake_connection():
-    key_path = os.getenv("SNOWFLAKE_PRIVATE_KEY_PATH", "/Users/rachelmcdonald/rsa_key.p8")
-    with open(key_path, "rb") as f:
-        private_key = serialization.load_pem_private_key(f.read(), password=None)
+    key_content = os.getenv("SNOWFLAKE_PRIVATE_KEY")
+    if key_content:
+        pem = key_content.encode()
+    else:
+        key_path = os.getenv("SNOWFLAKE_PRIVATE_KEY_PATH", "/Users/rachelmcdonald/rsa_key.p8")
+        with open(key_path, "rb") as f:
+            pem = f.read()
+    private_key = serialization.load_pem_private_key(pem, password=None)
     private_key_bytes = private_key.private_bytes(
         serialization.Encoding.DER,
         serialization.PrivateFormat.PKCS8,
@@ -139,18 +117,18 @@ def load_calendar(conn, rows: list[tuple], artist_names: list[str]):
 
 
 def main():
-    print("Starting Bandsintown tour calendar scraping...")
+    print("Starting Ticketmaster tour calendar fetch...")
     conn = get_snowflake_connection()
     try:
         artist_names = get_artist_names(conn)
-        print(f"Found {len(artist_names)} artists to scrape")
+        print(f"Found {len(artist_names)} artists to fetch")
 
         all_rows = []
         loaded_at = datetime.now(timezone.utc).isoformat()
 
         for artist_name in artist_names:
-            print(f"  Scraping {artist_name}...")
-            events = scrape_artist_events(artist_name)
+            print(f"  Fetching {artist_name}...")
+            events = fetch_artist_events(artist_name)
             for e in events:
                 all_rows.append((
                     e["artist_name"],
@@ -159,13 +137,13 @@ def main():
                     e["city"],
                     e["state"],
                     e["ticket_url"],
-                    "bandsintown",
+                    "ticketmaster",
                     loaded_at,
                 ))
-            print(f"    → {len(events)} upcoming events found")
+            print(f"    -> {len(events)} upcoming events found")
 
         load_calendar(conn, all_rows, artist_names)
-        print("Bandsintown tour calendar scraping complete.")
+        print("Ticketmaster tour calendar fetch complete.")
     finally:
         conn.close()
 

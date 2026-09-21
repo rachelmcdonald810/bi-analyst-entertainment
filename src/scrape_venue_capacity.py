@@ -75,9 +75,14 @@ def get_venues(conn) -> list[tuple[str, str, str]]:
 
 
 def get_snowflake_connection():
-    key_path = os.getenv("SNOWFLAKE_PRIVATE_KEY_PATH", "/Users/rachelmcdonald/rsa_key.p8")
-    with open(key_path, "rb") as f:
-        private_key = serialization.load_pem_private_key(f.read(), password=None)
+    key_content = os.getenv("SNOWFLAKE_PRIVATE_KEY")
+    if key_content:
+        pem = key_content.encode()
+    else:
+        key_path = os.getenv("SNOWFLAKE_PRIVATE_KEY_PATH", "/Users/rachelmcdonald/rsa_key.p8")
+        with open(key_path, "rb") as f:
+            pem = f.read()
+    private_key = serialization.load_pem_private_key(pem, password=None)
     private_key_bytes = private_key.private_bytes(
         serialization.Encoding.DER,
         serialization.PrivateFormat.PKCS8,
